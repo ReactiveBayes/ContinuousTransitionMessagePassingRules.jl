@@ -1,5 +1,5 @@
-# The documentation site of ContinuousTransitionMessagePassingRules. Build it with `make docs-continuous-transition` from the repository
-# root, or `julia --project=docs docs/make.jl` here.
+# The documentation site of ContinuousTransitionMessagePassingRules. Build it with `make docs`, or
+# `julia --project=docs docs/make.jl`.
 using Documenter, DocumenterInterLinks, DocInventories
 using ContinuousTransitionMessagePassingRules
 
@@ -28,4 +28,10 @@ makedocs(
         prettyurls = get(ENV, "CI", nothing) == "true",
         example_size_threshold = 400 * 1024, size_threshold_warn = 400 * 1024, size_threshold = 400 * 1024,
     ),
+)
+
+deploydocs(
+    repo = "github.com/ReactiveBayes/ContinuousTransitionMessagePassingRules.jl.git",
+    devbranch = "main",
+    push_preview = true,
 )
