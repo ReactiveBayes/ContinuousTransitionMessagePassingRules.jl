@@ -8,6 +8,11 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
 
 ### Added
 
+- `ScalarLinearContinuousTransition` (alias `ScalarCT`) with grouped scalar `y` and `x`
+  ports under the existing `LCTVMP(n, m)`. Supports separate state groups and a full joint,
+  preserving within-group covariance, with scalar messages, parameter messages, group
+  marginals, energies, reusable scratch, and rule-time dimension validation. Includes block
+  equivalence tests, scalar-sweep benchmarks.
 - `LinearContinuousTransition` with `LCTVMP(n, m)` for `A = reshape(a, n, m)`: exact mean-field
   and structured variational messages, joint marginal, and average energies without Jacobians.
   The message towards `a` requires no `q(a)` expansion point. Message and marginal rules reuse

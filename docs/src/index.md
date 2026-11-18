@@ -191,6 +191,126 @@ MessagePassingRulesBase.rule_coverage(LinearContinuousTransition)
 The original node remains appropriate for other transformations, including affine and nonlinear
 ones. Neither node supplies belief-propagation rules.
 
+## Separate scalar state ports
+
+[`ScalarLinearContinuousTransition`](@ref), also exported as [`ScalarCT`](@ref), represents
+the same density with `n` individual scalar `y` ports and `m` individual scalar `x` ports.
+It reuses `LCTVMP(n, m)` and declares `[:y..., :x..., :a, :W]`. The parameter vector and
+precision matrix remain multivariate. No Jacobians are evaluated.
+
+Two factorizations are supported:
+
+- `q(y)q(x)q(a)q(W)`: each state group retains its full covariance.
+- `q(y,x)q(a)q(W)`: the joint retains covariance across both state groups as well, in `[y; x]` order.
+
+`MeanField()` would split every scalar port independently and is not supported for groups
+larger than one; use the explicit group constraints below.
+
+Incoming state messages must be univariate Gaussians. Outgoing scalar messages eliminate
+the other coordinates with a Schur complement, including their incoming messages and
+excluding the target's own message. They are not obtained by taking the diagonal of a
+block message. With independent incoming state messages, the full local joint agrees with
+`LinearContinuousTransition` supplied with the corresponding diagonal incoming covariances.
+Separate scalar ports cannot represent arbitrary correlations in incoming block messages.
+
+### Calling rules directly
+
+Address a port by `(:y, k)` or `(:x, k)`. Message tuples have the full group length and
+`nothing` at the target's own position. Group marginals use `clusters`, not a tuple of
+independent scalar marginals:
+
+```@example ct
+scalar_parameters = (
+    a = MvNormalMeanCovariance(vec([1.0 0.0 1.0; 0.0 1.0 1.0]), Matrix(0.1I, 6, 6)),
+    W = Wishart(4.0, Matrix(0.25I, 2, 2)),
+)
+incoming_y = NormalMeanVariance(0.5, 1.0)
+incoming_x = (NormalMeanVariance(1.0, 1.0), NormalMeanVariance(2.0, 1.0), NormalMeanVariance(3.0, 1.0))
+
+# Full structured q(y,x): all other state messages are inputs.
+@call_message_update_rule(
+    node = ScalarCT, target = (:y, 1), algorithm = LCTVMP(2, 3),
+    m = (y = (nothing, incoming_y), x = incoming_x), q = scalar_parameters,
+)
+```
+
+```@example ct
+# Separate q(y)q(x): the other group supplies its full joint marginal.
+@call_message_update_rule(
+    node = ScalarCT, target = (:y, 1), algorithm = LCTVMP(2, 3),
+    m = (y = (nothing, incoming_y),), q = scalar_parameters,
+    clusters = ((:x,) => MvNormalMeanCovariance([1.0, 2.0, 3.0], Matrix(1.0I, 3, 3)),),
+)
+```
+
+Marginal targets are `(:y,)`, `(:x,)`, and `(:y, :x)`, with all incoming messages in their
+respective groups. Messages to `a` and `W` and the average energy take either the full joint
+`clusters = ((:y, :x) => qyx,)` or separate groups
+`clusters = ((:y,) => qy, (:x,) => qx)`. The message towards `a` requires no `q(a)`.
+
+The engine's scalar representation of a singleton group is accepted too. An outgoing
+singleton port may omit its own message group entirely. Other missing messages, partial
+groupings, and independent scalar marginals for larger groups are rejected. Wrong counts
+raise `DimensionMismatch` during rule execution, before working buffers are used.
+
+### RxInfer model
+
+The indexed left-hand side creates separate scalar output variables attached to one factor:
+
+```julia
+using RxInfer, ContinuousTransitionMessagePassingRules, LinearAlgebra
+
+@model function scalar_transition_example(z, n, m)
+    local x
+    for j in 1:m
+        x[j] ~ NormalMeanVariance(0.5, 1.0)
+    end
+    a ~ MvNormalMeanCovariance(ones(n * m), Matrix{Float64}(I, n * m, n * m))
+    W ~ Wishart(n + 2, Matrix{Float64}(I, n, n))
+
+    y[1:n] ~ ScalarLinearContinuousTransition(x = x, a = a, W = W) where {
+        algorithm = LCTVMP(n, m)
+    }
+    for i in 1:n
+        z[i] ~ NormalMeanVariance(y[i], 0.1)
+    end
+end
+
+structured = @constraints begin
+    q(y, x, a, W) = q(y, x)q(a)q(W)
+end
+separate = @constraints begin
+    q(y, x, a, W) = q(y)q(x)q(a)q(W)
+end
+
+n, m = 2, 3
+init = @initialization begin
+    q(a) = MvNormalMeanCovariance(ones(n * m), Matrix{Float64}(I, n * m, n * m))
+    q(W) = Wishart(n + 2, Matrix{Float64}(I, n, n))
+end
+result = infer(
+    model = scalar_transition_example(n = n, m = m), data = (z = [1.0, 0.5],),
+    constraints = structured, initialization = init, iterations = 10, free_energy = true,
+)
+```
+
+The runnable version is in `examples/scalar_linear_rxinfer.jl`; the optional
+`integration/rxinfer.jl` checks graph construction and structured inference for singleton
+and rectangular shapes in an environment containing RxInfer and this package.
+
+!!! warning "Separate-group inference in RxInfer"
+    Both factorizations are tested against the block rules through direct rule calls.
+    The example above runs the full joint factorization. With the installed ReactiveMP 7.0.0,
+    changing it to `constraints = separate` stalled without producing all requested
+    posteriors or free-energy values, including in probes with explicit initial local marginals.
+    Separate-group end-to-end inference therefore remains an integration limitation;
+    the implementation does not modify RxInfer or ReactiveMP scheduling.
+
+Each rule stream owns its reusable working matrices, separately from returned distributions.
+Computing every scalar message requires more Gaussian eliminations than updating two block
+ports; use the benchmarks to compare workloads for your dimensions. The scalar interface is
+for connecting state components independently, while retaining local group covariance.
+
 ## API
 
 The node and its alias.
@@ -200,4 +320,6 @@ ContinuousTransition
 CTransition
 LinearContinuousTransition
 LCTVMP
+ScalarLinearContinuousTransition
+ScalarCT
 ```

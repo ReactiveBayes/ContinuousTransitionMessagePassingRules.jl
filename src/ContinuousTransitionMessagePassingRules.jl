@@ -32,16 +32,19 @@ using MessagePassingRulesBase, BayesBase, ExponentialFamily, Distributions
 using MessagePassingRulesBase: AbstractAlgorithm
 using ExponentialFamily: WishartFast
 using FastCholesky: cholinv
-using LinearAlgebra: tr, logdet, lu, lu!, ldiv!, mul!, kron, I
+using LinearAlgebra: tr, logdet, lu, lu!, ldiv!, mul!, kron, I, cholesky!, Symmetric
 import ForwardDiff
 using MessagePassingRulesBase: add_outer, trace_product, negate!!, gaussian_cross_moment, gaussian_average_energy
 
 export ContinuousTransition, CTransition, CTVMP
 export LinearContinuousTransition, LCTVMP
+export ScalarLinearContinuousTransition, ScalarCT
 
 include("node.jl")
 include("rules.jl")
 include("linear_node.jl")
 include("linear_rules.jl")
+include("scalar_linear_node.jl")
+include("scalar_linear_rules.jl")
 
 end

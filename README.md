@@ -36,6 +36,22 @@ result = @call_message_update_rule(
 )
 ```
 
+For separate scalar state ports, use `ScalarLinearContinuousTransition` (alias `ScalarCT`)
+with the same `LCTVMP(n, m)`. In an RxInfer `@model`, construct one factor with:
+
+```julia
+y[1:n] ~ ScalarLinearContinuousTransition(x = x, a = a, W = W) where {
+    algorithm = LCTVMP(n, m)
+}
+```
+
+The node supports both `q(y)q(x)q(a)q(W)` and `q(y,x)q(a)q(W)`, retaining covariance
+within each group. Scalar outgoing messages use Gaussian elimination, and the engine reuses
+working matrices. See the [scalar-port documentation](docs/src/index.md#separate-scalar-state-ports)
+for direct calls and a complete RxInfer example. Incoming scalar messages cannot carry
+arbitrary correlations between ports. The RxInfer example uses the full joint; the documentation
+also describes the current integration limitation for inference with separate state groups.
+
 ```julia
 import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
 ```
@@ -47,8 +63,9 @@ import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
   name or by file; `make help` lists the other targets.
 - Julia 1.10 or later. MIT licence.
 
-To compare all rules against reshape-based `CTVMP`, including runtime and allocations with
-reused scratch, run from the repository root:
+To compare all block rules against reshape-based `CTVMP`, and scalar-port sweeps against
+equivalent block computations, including runtime and allocations with reused scratch, run
+from the repository root:
 
 ```sh
 julia --project=benchmark -e 'import Pkg; Pkg.develop(path="."); Pkg.instantiate()'
