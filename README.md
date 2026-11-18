@@ -63,6 +63,11 @@ import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
   name or by file; `make help` lists the other targets.
 - Julia 1.10 or later. MIT licence.
 
+`ScalarCT` also accepts `SLCTVMP(n, m; T = Float64)`, which preallocates a cache and reuses
+computations across its scalar ports in both factorizations. **Each node must have its own
+instance: sharing it between nodes or concurrent calls is not allowed because they would
+write into the same cache.** Construct it inside each node's `where { algorithm = ... }`.
+
 To compare all block rules against reshape-based `CTVMP`, and scalar-port sweeps against
 equivalent block computations, including runtime and allocations with reused scratch, run
 from the repository root:
@@ -70,4 +75,9 @@ from the repository root:
 ```sh
 julia --project=benchmark -e 'import Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=benchmark benchmark/linear.jl
+julia --project=benchmark benchmark/scalar_cached.jl
 ```
+
+The cached benchmark compares `ScalarCT` with `LCTVMP` and `SLCTVMP`, with both fixed inputs
+and parameters changing between sweeps. Timings exclude compilation and include returned
+message allocations; cache construction and retained cache size are reported separately.

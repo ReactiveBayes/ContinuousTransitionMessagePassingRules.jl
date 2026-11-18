@@ -38,7 +38,7 @@ using MessagePassingRulesBase: add_outer, trace_product, negate!!, gaussian_cros
 
 export ContinuousTransition, CTransition, CTVMP
 export LinearContinuousTransition, LCTVMP
-export ScalarLinearContinuousTransition, ScalarCT
+export ScalarLinearContinuousTransition, ScalarCT, SLCTVMP
 
 include("node.jl")
 include("rules.jl")
@@ -46,5 +46,6 @@ include("linear_node.jl")
 include("linear_rules.jl")
 include("scalar_linear_node.jl")
 include("scalar_linear_rules.jl")
+include("scalar_linear_cached.jl")
 
 end

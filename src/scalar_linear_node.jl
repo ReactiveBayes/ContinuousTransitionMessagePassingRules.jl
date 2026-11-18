@@ -3,7 +3,8 @@
 
 The density `y ~ N(reshape(a, n, m) * x, W⁻¹)` with separate scalar state ports.
 Its interfaces are `[:y..., :x..., :a, :W]`: `n` scalar outputs, `m` scalar inputs,
-the `n*m`-vector `a = vec(A)`, and the `n × n` noise precision. Supply `LCTVMP(n, m)`.
+the `n*m`-vector `a = vec(A)`, and the `n × n` noise precision. Supply `LCTVMP(n, m)` or
+[`SLCTVMP`](@ref)`(n, m)` to cache computations across this node's scalar ports.
 
 Supports `q(y)q(x)q(a)q(W)` and `q(y,x)q(a)q(W)`, with full covariance inside each
 state group. Incoming state messages are univariate Gaussians; group marginals are
@@ -15,9 +16,9 @@ Address scalar ports with `target = (:y, k)` or `(:x, k)`. Pass message tuples w
 sizes raise `DimensionMismatch` during rule execution. Singleton groups may use the
 engine's one-element tuple of scalar marginals instead of a joint marginal.
 
-Rules use covariance contractions and Gaussian elimination without Jacobians. The engine
-reuses scratch per stream, and returned parameters never alias it. Neither the algorithm
-nor the existing `LinearContinuousTransition` node is modified.
+Rules use covariance contractions and Gaussian elimination without Jacobians. Under `LCTVMP`,
+the engine reuses scratch per stream. Under `SLCTVMP`, the algorithm owns a cache and must
+not be shared between nodes or concurrent calls. Returned parameters own their arrays.
 
 # Examples
 

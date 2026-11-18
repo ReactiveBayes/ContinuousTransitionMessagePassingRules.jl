@@ -8,6 +8,12 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
 
 ### Added
 
+- `SLCTVMP(n, m; T = Float64)` for `ScalarCT`, with a cache allocated at construction,
+  shared transition computations and Gaussian solves across scalar ports, and reusable
+  moment/residual buffers. Supports both state factorizations with value-based invalidation,
+  including in-place parameter changes. Each node must own a separate algorithm instance;
+  sharing between nodes or concurrent calls is not supported. Includes equivalence,
+  invalidation, ownership tests, and fixed/changing-input benchmarks.
 - `ScalarLinearContinuousTransition` (alias `ScalarCT`) with grouped scalar `y` and `x`
   ports under the existing `LCTVMP(n, m)`. Supports separate state groups and a full joint,
   preserving within-group covariance, with scalar messages, parameter messages, group
