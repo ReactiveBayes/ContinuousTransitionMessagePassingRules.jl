@@ -3,6 +3,25 @@
     Aqua.test_all(ContinuousTransitionMessagePassingRules; deps_compat = (; check_extras = true))
 end
 
+@testitem "quality:linear node" tags = [:quality] begin
+    using ContinuousTransitionMessagePassingRules, MessagePassingRulesBase
+    using MessagePassingRulesBase: dependencies_spec, target_dependencies, extends_default_scheme, default_algorithm, Target, interfaces, ispure
+
+    algorithm = LCTVMP(2, 3)
+    @test (algorithm.n, algorithm.m) == (2, 3)
+    @test interfaces(LinearContinuousTransition) == (:y, :x, :a, :W)
+    @test ispure(algorithm)
+    spec = dependencies_spec(LinearContinuousTransition, algorithm)
+    @test all(t -> extends_default_scheme(spec, Target(t)), (:y, :x, :a, :W))
+    @test all(t -> isempty(target_dependencies(spec, Target(t))), (:y, :x, :a, :W))
+    @test default_algorithm(LinearContinuousTransition) === DefaultAlgorithm()
+    @test_throws Exception getresult(call_message_update_rule(LinearContinuousTransition, :y; q = (x = nothing, a = nothing, W = nothing)))
+    for dims in ((0, 2), (2, 0), (-1, 2), (2, -1))
+        @test_throws ArgumentError LCTVMP(dims...)
+    end
+    @test_throws MethodError LCTVMP(2.0, 3.0)
+end
+
 @testitem "quality:closure" tags = [:quality] begin
     import Pkg
 
