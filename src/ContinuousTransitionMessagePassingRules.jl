@@ -7,6 +7,9 @@ and `W` are learned alongside the states. Its rules are variational, mean-field 
 `q(y, x)`, with average energies, and run under [`CTVMP`](@ref), which carries `f` and which the
 model must give. A nonlinear `f` is linearised with ForwardDiff.
 
+For `A = reshape(a, n, m)`, [`LinearContinuousTransition`](@ref) with [`LCTVMP`](@ref)`(n, m)`
+computes the same variational updates directly, without Jacobians or linearisation.
+
 # Examples
 
 ```jldoctest; setup = :(using ContinuousTransitionMessagePassingRules, MessagePassingRulesBase, ExponentialFamily, BayesBase)
@@ -29,13 +32,16 @@ using MessagePassingRulesBase, BayesBase, ExponentialFamily, Distributions
 using MessagePassingRulesBase: AbstractAlgorithm
 using ExponentialFamily: WishartFast
 using FastCholesky: cholinv
-using LinearAlgebra: tr, logdet, lu, I
+using LinearAlgebra: tr, logdet, lu, lu!, ldiv!, mul!, kron, I
 import ForwardDiff
 using MessagePassingRulesBase: add_outer, trace_product, negate!!, gaussian_cross_moment, gaussian_average_energy
 
 export ContinuousTransition, CTransition, CTVMP
+export LinearContinuousTransition, LCTVMP
 
 include("node.jl")
 include("rules.jl")
+include("linear_node.jl")
+include("linear_rules.jl")
 
 end
