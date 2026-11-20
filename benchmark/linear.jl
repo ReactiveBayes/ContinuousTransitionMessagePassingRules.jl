@@ -31,7 +31,6 @@ function save_plots(shapes, timings)
 end
 
 function benchmark()
-    BLAS.set_num_threads(1)
     rng = MersenneTwister(42)
     spd(d) = (L = randn(rng, d, d); L * L' / d + I)
     println("Julia ", VERSION, "; BLAS threads: ", BLAS.get_num_threads())
