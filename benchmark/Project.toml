@@ -5,11 +5,13 @@ ContinuousTransitionMessagePassingRules = "be169b08-8551-4d4c-a46b-881478acc6d9"
 ExponentialFamily = "62312e5e-252a-4322-ace9-a5f4bf9b357b"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 MessagePassingRulesBase = "4a5b64c7-30c9-4471-82f2-bbe8464b157d"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 
 [compat]
 BenchmarkTools = "1"
+Plots = "1"
 julia = "1.10"
 
 [sources]

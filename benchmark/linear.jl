@@ -1,6 +1,6 @@
 # Run from the repository root; setup instructions are in README.md.
 using ContinuousTransitionMessagePassingRules, MessagePassingRulesBase, BayesBase, ExponentialFamily
-using BenchmarkTools, LinearAlgebra, Random, Printf
+using BenchmarkTools, LinearAlgebra, Random, Printf, Plots
 using MessagePassingRulesBase: Target, ClusterTarget, RuleContext, NoAnnotations,
     find_message_rule, find_marginal_rule, find_average_energy, rule_scratch, execute_rule
 
@@ -15,9 +15,19 @@ function prepared(node, algorithm, kind, edge, inputs; reuse = true)
     return () -> execute_rule(spec, nothing, scratch, algorithm, RuleContext(), args, NoAnnotations(), target)
 end
 
-function measure(f)
-    f() # exclude compilation
-    return minimum(@benchmark $f() seconds = 0.2 samples = 100 evals = 1)
+# One figure per rule in benchmark/plots (ignored by git): minimum time against shape, log scale.
+function save_plots(shapes, timings)
+    dir = mkpath(joinpath(@__DIR__, "plots"))
+    ticks = (1:length(shapes), ["$(n)×$(m)" for (n, m) in shapes])
+    for (label, times) in timings
+        figure = plot(
+            first.(times); label = "CTVMP", marker = :circle, yscale = :log10, xticks = ticks,
+            xlabel = "shape", ylabel = "minimum time (μs)", title = label, legend = :topleft,
+        )
+        plot!(figure, last.(times); label = "LCTVMP", marker = :circle)
+        savefig(figure, joinpath(dir, replace(label, " " => "_") * ".png"))
+    end
+    return
 end
 
 function benchmark()
@@ -27,7 +37,9 @@ function benchmark()
     println("Julia ", VERSION, "; BLAS threads: ", BLAS.get_num_threads())
     println("Minimum warmed time; bytes include fresh returned parameters. No timing assertions.")
     println("shape  rule       CTVMP μs  LCTVMP μs  speedup  CTVMP bytes  LCTVMP bytes  scratch saved")
-    for (n, m) in ((2, 2), (2, 3), (5, 5), (10, 10))
+    shapes = ((2, 2), (2, 3), (5, 5), (10, 10))
+    timings = Dict{String, Vector{NTuple{2, Float64}}}() # rule => (CTVMP μs, LCTVMP μs) per shape
+    for (n, m) in shapes
         qy = MvNormalMeanCovariance(randn(rng, n), spd(n))
         qx = MvNormalMeanCovariance(randn(rng, m), spd(m))
         qa = MvNormalMeanCovariance(randn(rng, n * m), 0.1 * spd(n * m))
@@ -47,12 +59,17 @@ function benchmark()
                 ("E mf", :energy, nothing, (q = (y = qy, x = qx, a = qa, W = qW),)),
             )
             refinputs = edge === :a ? merge(inputs, (q = merge(inputs.q, (a = qa,)),)) : inputs
-            old = measure(prepared(ContinuousTransition, CTVMP(a -> reshape(a, n, m)), kind, edge, refinputs))
-            new = measure(prepared(LinearContinuousTransition, LCTVMP(n, m), kind, edge, inputs))
-            fresh = measure(prepared(LinearContinuousTransition, LCTVMP(n, m), kind, edge, inputs; reuse = false))
+            ct = prepared(ContinuousTransition, CTVMP(a -> reshape(a, n, m)), kind, edge, refinputs)
+            lct = prepared(LinearContinuousTransition, LCTVMP(n, m), kind, edge, inputs)
+            lctfresh = prepared(LinearContinuousTransition, LCTVMP(n, m), kind, edge, inputs; reuse = false)
+            old = minimum(@benchmark $ct() seconds = 0.2 samples = 100 evals = 1)
+            new = minimum(@benchmark $lct() seconds = 0.2 samples = 100 evals = 1)
+            fresh = minimum(@benchmark $lctfresh() seconds = 0.2 samples = 100 evals = 1)
             @printf("%2d×%-2d  %-9s  %8.2f  %9.2f  %6.1fx  %11d  %12d  %13d\n", n, m, label, old.time / 1000, new.time / 1000, old.time / new.time, old.memory, new.memory, fresh.memory - new.memory)
+            push!(get!(timings, label, NTuple{2, Float64}[]), (old.time / 1000, new.time / 1000))
         end
     end
+    save_plots(shapes, timings)
     return
 end
 
