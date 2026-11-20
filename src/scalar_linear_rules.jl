@@ -61,12 +61,11 @@ function slct_canonical!(scratch, algo, args, group, k)
     return J, h, index
 end
 
-function slct_scalar_message(scratch, algo, args, group, k)
-    k >= 1 || throw(ArgumentError("target index must be positive, got $k"))
-    J, h, target = slct_canonical!(scratch, algo, args, group, k)
+# Eliminate every coordinate but `target` from the canonical system (J, h).
+function slct_eliminate(eliminate, solve, J, h, target)
     d = length(h)
     d == 1 && return NormalWeightedMeanPrecision(h[1], J[1, 1])
-    E, rhs = view(scratch.eliminate, 1:(d - 1), 1:(d - 1)), view(scratch.rhs, 1:(d - 1), :)
+    E, rhs = view(eliminate, 1:(d - 1), 1:(d - 1)), view(solve, 1:(d - 1), :)
     for j in 1:(d - 1)
         jj = j < target ? j : j + 1
         rhs[j, 1] = h[jj]
@@ -84,6 +83,12 @@ function slct_scalar_message(scratch, algo, args, group, k)
         λ -= J[target, ii] * rhs[i, 2]
     end
     return NormalWeightedMeanPrecision(ξ, λ)
+end
+
+function slct_scalar_message(scratch, algo, args, group, k)
+    k >= 1 || throw(ArgumentError("target index must be positive, got $k"))
+    J, h, target = slct_canonical!(scratch, algo, args, group, k)
+    return slct_eliminate(scratch.eliminate, scratch.rhs, J, h, target)
 end
 
 function slct_group_marginal(scratch, algo, args, group)

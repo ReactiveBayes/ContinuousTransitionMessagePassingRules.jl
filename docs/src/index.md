@@ -15,7 +15,7 @@ ContinuousTransitionMessagePassingRules
     [GraphPPL](https://github.com/ReactiveBayes/GraphPPL.jl) model. The examples here call the
     rules directly, as a test does.
 
-The site is one page: this one. It follows the node from its definition to its rules, an example
+This page follows the node from its definition to its rules, an example
 and its limitations, and ends with the API.
 
 ## Overview
@@ -173,16 +173,12 @@ the structured message towards `W` cannot determine the split of `q(y, x)` from 
 
 This node supports the same eight messages, joint marginal, and two average energies. Its
 message towards `a` uses weighted mean `vec(E[W] * E[y*x′])` and precision
-`kron(E[x*x′], E[W])`, so it does not read `q(a)` or need an initial expansion point. Other
-messages still require `q(a)`.
+`kron(E[x*x′], E[W])`, so it does not read `q(a)` or need an initial expansion point.
 
 The rules reshape the parameter mean and contract blocks of its covariance directly.
-They construct no Jacobians, including constant identity or selection matrices. Gaussian
-solves and covariance contractions still take work. Message and marginal rules declare
+They construct no Jacobians, including constant identity or selection matrices. Message and marginal rules declare
 scratch matrices that the engine reuses per outbound stream; each call overwrites its scratch
-and returns separately owned parameters. Sharing `LCTVMP` across nodes therefore does not
-share mutable working memory. Direct calls allocate fresh scratch, and average energies do
-not retain it between calls.
+and returns separately owned parameters. Sharing `LCTVMP` across nodes therefore is allowed.
 
 ```@example ct
 MessagePassingRulesBase.rule_coverage(LinearContinuousTransition)
@@ -364,6 +360,112 @@ matrices. `SLCTVMP` shares computations across the ports of one node; use the be
 to compare workloads for your dimensions. The scalar interface connects state components
 independently while retaining local group covariance.
 
+## A convolution as one node
+
+[`Conv2dContinuousTransition`](@ref), also exported as [`Conv2dCT`](@ref), is a whole
+two-dimensional convolution with scalar ports: every output position `p` has
+`y[:, p] ~ N(A * patch(x, p), W⁻¹)` with the same `A = reshape(a, C_out, kh * kw * C_in)` and
+the same `C_out × C_out` precision `W`. Its interfaces are `[:y..., :x..., :a, :W]`, as for
+`ScalarCT`, and its algorithm [`Conv2dVMP`](@ref) carries the geometry and a cache:
+
+```@example ct
+conv = Conv2dVMP((4, 4, 1), 2, (3, 3)) # a 4 × 4 image, 1 → 2 channels, a 3 × 3 kernel
+(conv.outsize, conv.ny, conv.nx, conv.n, conv.m)
+```
+
+The image and the output are flat, in column-major order: `x = vec(image)` and
+`y = vec(output)` with the output `H_out × W_out × C_out`. The model never indexes rows and
+columns; `conv.taps[j, p]` holds the index in `x` of entry `j` of the patch at position `p`
+(`0` for zero padding), a patch being `vec` of its `kh × kw × C_in` window.
+
+The node is the linear Gaussian transition whose matrix repeats the kernel at every position.
+With `a_big = T * a` for the 0/1 matrix `T` that copies kernel entries into that matrix, and
+`W_big` repeating `W` on the diagonal, its rules agree with [`ScalarCT`](@ref) under
+`LCTVMP(conv.ny, conv.nx)`:
+
+- messages towards every `y` and `x` port, and the group marginals, are the same;
+- the message towards `a` is the big one projected back, `T' * ξ` and `T' * Λ * T`;
+- the message towards `W` is `WishartFast(C_out + 1 + positions, R)`, with `R` the sum of the
+  diagonal blocks of the big residual;
+- the average energy is the same.
+
+It also equals one `ScalarCT` per position sharing `a` and `W`, as far as `a`, `W` and the
+energy are concerned. The difference is in the states: overlapping patches are eliminated
+exactly inside the node, where separate nodes would form loops.
+
+Both `q(y)q(x)q(a)q(W)` and `q(y,x)q(a)q(W)` are supported. A whole group may also be given
+as independent scalar marginals, which is how the engine supplies observed pixels:
+
+```@example ct
+pixels = ntuple(i -> PointMass(i / 16), 16)
+@call_message_update_rule(
+    node = Conv2dCT, target = (:y, 1), algorithm = conv,
+    m = (y = (nothing, ntuple(_ -> NormalMeanVariance(0.0, 1.0), 7)...),),
+    q = (x = pixels, a = MvNormalMeanCovariance(ones(18), Matrix(0.1I, 18, 18)), W = Wishart(4.0, Matrix(0.25I, 2, 2))),
+)
+```
+
+Given `q(x)`, the output positions are independent, so a message towards `y` solves a
+`C_out × C_out` system. Messages that involve latent inputs assemble a dense system over all
+of `x`, or all of `[y; x]`, factorise it once and reuse it across ports while the incoming
+precisions stay the same, as `SLCTVMP` does. That memory grows with the square of the number
+of ports and is allocated on first use. **Create one `Conv2dVMP` per node.**
+
+### A batch of images in RxInfer
+
+`integration/conv2d_mnist.jl` learns a kernel from a batch of images, one node per image,
+with the pixels as data:
+
+```julia
+@model function conv2d_batch(x, z, insize, cout, kernel, batch, noise)
+    local y
+    template = Conv2dVMP(insize, cout, kernel)
+    ny, nx, d = template.ny, template.nx, template.n * template.m
+    a ~ MvNormalMeanCovariance(zeros(d), Matrix(10.0I, d, d))
+    W ~ Wishart(cout + 2, Matrix(1.0I, cout, cout))
+    for b in 1:batch
+        ys, xs = ((b - 1) * ny + 1):(b * ny), ((b - 1) * nx + 1):(b * nx)
+        y[ys] ~ Conv2dCT(x = x[xs], a = a, W = W) where {
+            algorithm = Conv2dVMP(insize, cout, kernel) # A fresh cache for every image.
+        }
+    end
+    for i in 1:(batch * ny)
+        z[i] ~ NormalMeanVariance(y[i], noise)
+    end
+end
+```
+
+with `constraints = @constraints begin q(y, a, W) = q(y)q(a)q(W) end`, and `x` and `z` the
+concatenated `vec`s of the images and of their noisy convolutions. It has its own
+environment, because RxInfer is not a dependency of this package:
+
+```
+julia -O0 --project=integration integration/conv2d_mnist.jl 14 4 1
+```
+
+!!! warning "Compilation grows with the number of ports"
+    The rules themselves are fast, but ReactiveMP compiles separate code for every port of a
+    group, over tuples as long as the group. On Julia 1.13 with
+    RxInfer 6.1.3, the first `infer` call took 87 s for two nodes of 68 ports each and 343 s
+    for 136 ports; a second call in the same session took 0.1 s. Nearly all of that is the
+    optimiser: with `julia -O0` the 68-port model takes 21 s, and a batch of four 14 × 14
+    MNIST images, 340 ports per node, takes 231 s (760 s with two output channels, 484 ports). Full 28 × 28 images are about 1,460 ports
+    per node and have not been run. Use `-O0` and pooled or cropped images until the engine
+    handles long groups without per-port code.
+
+The run above recovers the kernel, and the free energy falls steeply and then settles. After
+settling it can rise by a small amount between iterations (0.04 on a total fall of 230 in
+one run), which the script tolerates up to 1% of the total fall. The rules' energy and
+marginals are tested against `ScalarCT`, so this is not specific to the convolution; its
+cause has not been traced.
+
+The script also takes a file name, and then saves a picture of every image, its exact
+convolution, the noisy observation and the posterior mean of the node's `y` ports:
+
+```
+julia -O0 --project=integration integration/conv2d_mnist.jl 14 4 2 integration/conv2d_mnist.png
+```
+
 ## API
 
 The node and its alias.
@@ -376,4 +478,7 @@ LCTVMP
 ScalarLinearContinuousTransition
 ScalarCT
 SLCTVMP
+Conv2dContinuousTransition
+Conv2dCT
+Conv2dVMP
 ```

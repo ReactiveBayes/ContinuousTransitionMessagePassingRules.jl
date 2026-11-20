@@ -234,26 +234,34 @@ function slct_cached_system!(algo, args, group, k)
     return s, J0, index
 end
 
-function slct_cached_message(algo, args, group, k)
-    k >= 1 || throw(ArgumentError("target index must be positive, got $k"))
-    s, J0, index = slct_cached_system!(algo, args, group, k)
-    if !s.valid
-        s.factor .= s.J
-        slct_identity!(s.V)
-        ldiv!(cholesky!(Symmetric(s.factor)), s.V)
-        s.valid = true
-        s.factorizations += 1
-    end
-    # V[i,k]/V[k,k] = -(J[-k,-k] \ J[-k,k])[i]. This Schur form avoids subtracting
-    # a possibly large cached target precision from 1/V[k,k]. Its own prior cancels.
-    ξ, λ = s.h[index], J0[index, index]
-    for i in eachindex(s.h)
+function slct_factorize!(s::SLCTSystemCache)
+    s.valid && return s
+    s.factor .= s.J
+    slct_identity!(s.V)
+    ldiv!(cholesky!(Symmetric(s.factor)), s.V)
+    s.valid = true
+    s.factorizations += 1
+    return s
+end
+
+# V[i,k]/V[k,k] = -(J[-k,-k] \ J[-k,k])[i]. This Schur form avoids subtracting
+# a possibly large cached target precision from 1/V[k,k]. Its own prior cancels.
+function slct_schur(h, J0, V, index)
+    ξ, λ = h[index], J0[index, index]
+    for i in eachindex(h)
         i == index && continue
-        ratio = s.V[i, index] / s.V[index, index]
-        ξ += s.h[i] * ratio
+        ratio = V[i, index] / V[index, index]
+        ξ += h[i] * ratio
         λ += J0[index, i] * ratio
     end
     return NormalWeightedMeanPrecision(ξ, λ)
+end
+
+function slct_cached_message(algo, args, group, k)
+    k >= 1 || throw(ArgumentError("target index must be positive, got $k"))
+    s, J0, index = slct_cached_system!(algo, args, group, k)
+    slct_factorize!(s)
+    return slct_schur(s.h, J0, s.V, index)
 end
 
 function slct_cached_marginal(algo, args, group)

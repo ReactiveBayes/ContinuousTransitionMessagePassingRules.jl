@@ -52,6 +52,19 @@ for direct calls and a complete RxInfer example. Incoming scalar messages cannot
 arbitrary correlations between ports. The RxInfer example uses the full joint; the documentation
 also describes the current integration limitation for inference with separate state groups.
 
+For a convolution, `Conv2dContinuousTransition` (alias `Conv2dCT`) takes a flat image
+`x = vec(image)` and a flat output `y`, one node per image, with the geometry in its cached
+algorithm:
+
+```julia
+y[1:ny] ~ Conv2dCT(x = x[1:nx], a = a, W = W) where {
+    algorithm = Conv2dVMP((H, W, C_in), C_out, (kh, kw))
+}
+```
+
+It agrees with `ScalarCT` supplied with the matrix that repeats the kernel, accepts observed
+pixels, and is described in the [convolution documentation](docs/src/index.md#a-convolution-as-one-node).
+
 ```julia
 import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
 ```

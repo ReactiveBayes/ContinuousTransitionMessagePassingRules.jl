@@ -31,14 +31,16 @@ module ContinuousTransitionMessagePassingRules
 using MessagePassingRulesBase, BayesBase, ExponentialFamily, Distributions
 using MessagePassingRulesBase: AbstractAlgorithm
 using ExponentialFamily: WishartFast
-using FastCholesky: cholinv
-using LinearAlgebra: tr, logdet, lu, lu!, ldiv!, mul!, kron, I, cholesky!, Symmetric
+using FastCholesky: cholinv, chollogdet
+import FastCholesky, LinearAlgebra
+using LinearAlgebra: tr, logdet, lu, lu!, ldiv!, mul!, kron, I, cholesky!, Symmetric, Diagonal
 import ForwardDiff
 using MessagePassingRulesBase: add_outer, trace_product, negate!!, gaussian_cross_moment, gaussian_average_energy
 
 export ContinuousTransition, CTransition, CTVMP
 export LinearContinuousTransition, LCTVMP
 export ScalarLinearContinuousTransition, ScalarCT, SLCTVMP
+export Conv2dContinuousTransition, Conv2dCT, Conv2dVMP
 
 include("node.jl")
 include("rules.jl")
@@ -47,5 +49,7 @@ include("linear_rules.jl")
 include("scalar_linear_node.jl")
 include("scalar_linear_rules.jl")
 include("scalar_linear_cached.jl")
+include("conv2d_node.jl")
+include("conv2d_rules.jl")
 
 end

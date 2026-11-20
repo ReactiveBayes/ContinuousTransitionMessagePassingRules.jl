@@ -8,6 +8,14 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
 
 ### Added
 
+- `Conv2dContinuousTransition` (alias `Conv2dCT`) with `Conv2dVMP((H, W, C_in), C_out, (kh, kw); stride, pad)`:
+  a whole convolution as one node with flat scalar `y` and `x` ports, a shared kernel `a`
+  and noise precision `W`. Same factorizations as `ScalarCT`, plus independent scalar
+  marginals for a group, such as the `PointMass` marginals of observed pixels. The cached
+  algorithm solves a `C_out × C_out` system per position given `q(x)` and reuses one dense
+  factorisation across ports for latent inputs. Tested against `ScalarCT` with the tied
+  matrix and against one `ScalarCT` per position. `integration/conv2d_mnist.jl` learns a
+  kernel from a batch of MNIST images with RxInfer.
 - `SLCTVMP(n, m; T = Float64)` for `ScalarCT`, with a cache allocated at construction,
   shared transition computations and Gaussian solves across scalar ports, and reusable
   moment/residual buffers. Supports both state factorizations with value-based invalidation,
