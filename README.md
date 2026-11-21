@@ -22,6 +22,20 @@ result = @call_message_update_rule(
 getresult(result)   # MvNormalMeanPrecision([6.0], [1.0;;])
 ```
 
+For a matrix learned entry by entry, use `LinearContinuousTransition` with `LCTVMP(n, m)`:
+it computes the same rules as `CTVMP(a -> reshape(a, n, m))` without Jacobians or
+linearisation. `a = vec(A)` uses Julia's column-major ordering. `LCTVMP` supplies only the
+shape; the factorisation still selects ordinary mean-field or structured VMP. Messages to
+`a` need no expansion point, and the inference engine reuses scratch matrices per message
+stream without overwriting earlier results.
+
+```julia
+result = @call_message_update_rule(
+    node = LinearContinuousTransition, target = :y, algorithm = LCTVMP(1, 1),
+    q = (x = MvNormalMeanCovariance([2.0], [1.0;;]), a = MvNormalMeanCovariance([3.0], [1.0;;]), W = Wishart(2, [0.5;;])),
+)
+```
+
 ```julia
 import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
 ```
@@ -32,3 +46,11 @@ import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
   must be selected by some test. `make test test_args="name:rules"` selects items by tag, by
   name or by file; `make help` lists the other targets.
 - Julia 1.10 or later. MIT licence.
+
+To compare all rules against reshape-based `CTVMP`, including runtime and allocations with
+reused scratch, run from the repository root:
+
+```sh
+julia --project=benchmark -e 'import Pkg; Pkg.develop(path="."); Pkg.instantiate()'
+julia --project=benchmark benchmark/linear.jl
+```

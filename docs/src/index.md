@@ -149,6 +149,48 @@ true
 - **A nonlinear `f` is linearised**, around the mean of `q(a)`, so its rules and its average
   energy are approximate; for an `f` linear in `a` they are exact.
 
+## Reshape without Jacobians
+
+When every entry of `A` is learned independently as a parameter, use
+[`LinearContinuousTransition`](@ref) with [`LCTVMP`](@ref)`(n, m)`. It represents the same
+density and computes the same variational updates as `ContinuousTransition` with
+`CTVMP(a -> reshape(a, n, m))`, to floating-point precision. The covariance of `a` can be fully
+dense: the entries need not be statistically independent.
+
+The four interfaces are still `y`, `x`, `a`, and `W`, with dimensions `n`, `m`, `n*m`, and
+`n × n`. Julia's column-major ordering applies: `a = vec(A)`. `LCTVMP` carries only the shape;
+the factorisation selects mean-field or structured VMP. Both dimensions are explicit because
+the structured message towards `W` cannot determine the split of `q(y, x)` from its inputs.
+
+```@example ct
+@call_message_update_rule(
+    node = LinearContinuousTransition, target = :y, algorithm = LCTVMP(2, 3),
+    q = (x = MvNormalMeanCovariance([1.0, 2.0, 3.0], Matrix(1.0I, 3, 3)),
+         a = MvNormalMeanCovariance(vec([1.0 0.0 1.0; 0.0 1.0 1.0]), Matrix(1.0I, 6, 6)),
+         W = Wishart(3.0, Matrix(1.0I, 2, 2))),
+)
+```
+
+This node supports the same eight messages, joint marginal, and two average energies. Its
+message towards `a` uses weighted mean `vec(E[W] * E[y*x′])` and precision
+`kron(E[x*x′], E[W])`, so it does not read `q(a)` or need an initial expansion point. Other
+messages still require `q(a)`.
+
+The rules reshape the parameter mean and contract blocks of its covariance directly.
+They construct no Jacobians, including constant identity or selection matrices. Gaussian
+solves and covariance contractions still take work. Message and marginal rules declare
+scratch matrices that the engine reuses per outbound stream; each call overwrites its scratch
+and returns separately owned parameters. Sharing `LCTVMP` across nodes therefore does not
+share mutable working memory. Direct calls allocate fresh scratch, and average energies do
+not retain it between calls.
+
+```@example ct
+MessagePassingRulesBase.rule_coverage(LinearContinuousTransition)
+```
+
+The original node remains appropriate for other transformations, including affine and nonlinear
+ones. Neither node supplies belief-propagation rules.
+
 ## API
 
 The node and its alias.
@@ -156,4 +198,6 @@ The node and its alias.
 ```@docs
 ContinuousTransition
 CTransition
+LinearContinuousTransition
+LCTVMP
 ```
