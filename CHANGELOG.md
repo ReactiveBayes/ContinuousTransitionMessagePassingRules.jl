@@ -6,13 +6,15 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-11-21
+
 ### Added
 
 - `LinearContinuousTransition` with `LCTVMP(n, m)` for `A = reshape(a, n, m)`: exact mean-field
   and structured variational messages, joint marginal, and average energies without Jacobians.
   The message towards `a` requires no `q(a)` expansion point. Message and marginal rules reuse
   scratch matrices through the inference engine while keeping returned parameters independent.
-- Equivalence, numeric-type, dimension, and scratch-reuse tests, and an isolated benchmark
+  Equivalence, numeric-type, dimension, and scratch-reuse tests, and an isolated benchmark
   comparing every rule with reshape-based `CTVMP`.
 
 ## [1.0.0] - 2026-10-12
