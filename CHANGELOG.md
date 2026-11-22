@@ -6,6 +6,10 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
 
 ## [Unreleased]
 
+### Optimization
+
+- Optimization for `lct_uncertainty!` method.
+
 ## [1.1.0] - 2026-11-21
 
 ### Added
