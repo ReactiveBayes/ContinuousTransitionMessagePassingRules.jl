@@ -4,12 +4,16 @@ function lct_uncertainty!(K, algo::LCTVMP, q_a, mW)
     n, m = algo.n, algo.m
     Va = lct_size(cov(q_a), (n * m, n * m), :a)
     lct_size(mW, (n, n), :W)
-    fill!(K, zero(eltype(K)))
-    for l in 1:m, k in 1:m
-        C = @view Va[((k - 1) * n + 1):(k * n), ((l - 1) * n + 1):(l * n)]
+    lct_size(K, (m, m), :K)
+    Base.require_one_based_indexing(K, Va, mW)
+    # Accumulate each block contraction locally: repeatedly updating K[k, l]
+    # prevents the compiler from keeping the reduction in a scalar register.
+    @inbounds for l in 1:m, k in 1:m
+        total = zero(eltype(K))
         for j in 1:n, i in 1:n
-            K[k, l] += mW[i, j] * C[i, j]
+            total += mW[i, j] * Va[(k - 1) * n + i, (l - 1) * n + j]
         end
+        K[k, l] = total
     end
     return K
 end
