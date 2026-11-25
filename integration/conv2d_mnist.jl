@@ -34,7 +34,7 @@ end
     for b in 1:batch
         ys, xs = ((b - 1) * ny + 1):(b * ny), ((b - 1) * nx + 1):(b * nx)
         y[ys] ~ Conv2dCT(x = x[xs], a = a, W = W) where {
-            algorithm = Conv2dVMP(insize, cout, kernel), # A fresh cache for every image.
+            algorithm = Conv2dVMP(insize, cout, kernel; ports = :observed), # A fresh cache for every image.
         }
     end
     for i in 1:(batch * ny)

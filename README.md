@@ -58,12 +58,16 @@ algorithm:
 
 ```julia
 y[1:ny] ~ Conv2dCT(x = x[1:nx], a = a, W = W) where {
-    algorithm = Conv2dVMP((H, W, C_in), C_out, (kh, kw))
+    algorithm = Conv2dVMP((H, W, C_in), C_out, (kh, kw); ports = :joint)
 }
 ```
 
-It agrees with `ScalarCT` supplied with the matrix that repeats the kernel, accepts observed
-pixels, and is described in the [convolution documentation](docs/src/index.md#a-convolution-as-one-node).
+It agrees with `ContinuousTransition` under `CTVMP` given the matrix that repeats the kernel
+and independent state messages, solves latent images in a banded system instead of a dense
+one, accepts observed pixels, and is described in the
+[convolution documentation](docs/src/index.md#a-convolution-as-one-node).
+`integration/conv2d_vs_ctvmp.jl` compares it with `CTVMP` end to end in RxInfer and
+`benchmark/conv2d.jl` rule by rule.
 
 ```julia
 import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")

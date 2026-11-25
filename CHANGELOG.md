@@ -8,14 +8,23 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
 
 ### Added
 
-- `Conv2dContinuousTransition` (alias `Conv2dCT`) with `Conv2dVMP((H, W, C_in), C_out, (kh, kw); stride, pad)`:
-  a whole convolution as one node with flat scalar `y` and `x` ports, a shared kernel `a`
-  and noise precision `W`. Same factorizations as `ScalarCT`, plus independent scalar
-  marginals for a group, such as the `PointMass` marginals of observed pixels. The cached
-  algorithm solves a `C_out × C_out` system per position given `q(x)` and reuses one dense
-  factorisation across ports for latent inputs. Tested against `ScalarCT` with the tied
-  matrix and against one `ScalarCT` per position. `integration/conv2d_mnist.jl` learns a
-  kernel from a batch of MNIST images with RxInfer.
+- `Conv2dContinuousTransition` (alias `Conv2dCT`) with
+  `Conv2dVMP((H, W, C_in), C_out, (kh, kw); stride, pad, T, ports)`: a whole convolution as one
+  node with flat scalar `y` and `x` ports, a shared kernel `a` and noise precision `W`, for
+  `q(y,x)q(a)q(W)`, `q(y)q(x)q(a)q(W)` and observed or independent scalar inputs.
+  - Latent inputs are solved exactly in a banded system over `x` (outputs eliminated per
+    position, banded Cholesky, selected inverse): `O(nx b²)` time and `O(nx b)` memory for
+    bandwidth `b`, with no dense matrix over the ports.
+  - Group marginals are `Conv2dMarginal`s: means, variances, the message towards every port,
+    the summed patch moments and the entropy. The messages towards `a` and `W` and the
+    energy read those moments and invert nothing.
+  - `ports = :joint`, `:separate` or `:observed` makes every port read its message from its
+    group's marginal, so that an engine runs one rule for all ports and the node solves once
+    per iteration; `:default` follows the engine's default scheme.
+  - Tested against `ContinuousTransition` under `CTVMP` with the convolution matrix and
+    independent (diagonal) state messages, for every rule. `integration/conv2d_vs_ctvmp.jl`
+    compares the two end to end in RxInfer, `benchmark/conv2d.jl` rule by rule, and
+    `integration/conv2d_mnist.jl` learns a kernel from MNIST images.
 - `SLCTVMP(n, m; T = Float64)` for `ScalarCT`, with a cache allocated at construction,
   shared transition computations and Gaussian solves across scalar ports, and reusable
   moment/residual buffers. Supports both state factorizations with value-based invalidation,
@@ -27,11 +36,20 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
   preserving within-group covariance, with scalar messages, parameter messages, group
   marginals, energies, reusable scratch, and rule-time dimension validation. Includes block
   equivalence tests, scalar-sweep benchmarks.
+
+### Optimization
+
+- Optimization for `lct_uncertainty!` method.
+
+## [1.1.0] - 2026-11-21
+
+### Added
+
 - `LinearContinuousTransition` with `LCTVMP(n, m)` for `A = reshape(a, n, m)`: exact mean-field
   and structured variational messages, joint marginal, and average energies without Jacobians.
   The message towards `a` requires no `q(a)` expansion point. Message and marginal rules reuse
   scratch matrices through the inference engine while keeping returned parameters independent.
-- Equivalence, numeric-type, dimension, and scratch-reuse tests, and an isolated benchmark
+  Equivalence, numeric-type, dimension, and scratch-reuse tests, and an isolated benchmark
   comparing every rule with reshape-based `CTVMP`.
 
 ## [1.0.0] - 2026-10-12
