@@ -36,22 +36,6 @@ result = @call_message_update_rule(
 )
 ```
 
-For separate scalar state ports, use `ScalarLinearContinuousTransition` (alias `ScalarCT`)
-with the same `LCTVMP(n, m)`. In an RxInfer `@model`, construct one factor with:
-
-```julia
-y[1:n] ~ ScalarLinearContinuousTransition(x = x, a = a, W = W) where {
-    algorithm = LCTVMP(n, m)
-}
-```
-
-The node supports both `q(y)q(x)q(a)q(W)` and `q(y,x)q(a)q(W)`, retaining covariance
-within each group. Scalar outgoing messages use Gaussian elimination, and the engine reuses
-working matrices. See the [scalar-port documentation](docs/src/index.md#separate-scalar-state-ports)
-for direct calls and a complete RxInfer example. Incoming scalar messages cannot carry
-arbitrary correlations between ports. The RxInfer example uses the full joint; the documentation
-also describes the current integration limitation for inference with separate state groups.
-
 For a convolution, `Conv2dContinuousTransition` (alias `Conv2dCT`) takes a flat image
 `x = vec(image)` and a flat output `y`, one node per image, with the geometry in its cached
 algorithm:
@@ -80,21 +64,12 @@ import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
   name or by file; `make help` lists the other targets.
 - Julia 1.10 or later. MIT licence.
 
-`ScalarCT` also accepts `SLCTVMP(n, m; T = Float64)`, which preallocates a cache and reuses
-computations across its scalar ports in both factorizations. **Each node must have its own
-instance: sharing it between nodes or concurrent calls is not allowed because they would
-write into the same cache.** Construct it inside each node's `where { algorithm = ... }`.
-
-To compare all block rules against reshape-based `CTVMP`, and scalar-port sweeps against
-equivalent block computations, including runtime and allocations with reused scratch, run
+To compare all rules against reshape-based `CTVMP`, including runtime and allocations with
+reused scratch, and every `Conv2dCT` rule against `CTVMP` with the convolution matrix, run
 from the repository root:
 
 ```sh
 julia --project=benchmark -e 'import Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=benchmark benchmark/linear.jl
-julia --project=benchmark benchmark/scalar_cached.jl
+julia --project=benchmark benchmark/conv2d.jl
 ```
-
-The cached benchmark compares `ScalarCT` with `LCTVMP` and `SLCTVMP`, with both fixed inputs
-and parameters changing between sweeps. Timings exclude compilation and include returned
-message allocations; cache construction and retained cache size are reported separately.

@@ -1,8 +1,8 @@
 function conv_transition!(algo::Conv2dVMP, qa, qW)
     c = algo.cache
-    a = slct_gaussian!(c.a, qa)
+    a = conv_gaussian!(c.a, qa)
     W = lct_mean(qW, (algo.n, algo.n), :W)
-    c.a_version == a.version && slct_equal(c.W, W) && return c
+    c.a_version == a.version && conv_equal(c.W, W) && return c
     c.a_version = -1
     c.W .= W
     A = reshape(a.μ, algo.n, algo.m)
@@ -380,7 +380,7 @@ function conv_solved!(c::Conv2dCache{T}, algo, block) where {T}
 end
 
 function conv_update!(target::AbstractVector{T}, source) where {T}
-    slct_equal(target, source) && return false
+    conv_equal(target, source) && return false
     target .= source
     return true
 end
@@ -559,7 +559,7 @@ end
 
 function conv_residual!(algo, args)
     c = conv_moments!(algo, args)
-    a = slct_gaussian!(c.a, args.q[:a])
+    a = conv_gaussian!(c.a, args.q[:a])
     A, R = reshape(a.μ, algo.n, algo.m), c.residual
     mul!(c.cross, c.Eyx, A')
     R .= c.Eyy .- c.cross .- c.cross'

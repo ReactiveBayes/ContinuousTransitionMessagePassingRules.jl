@@ -187,186 +187,13 @@ MessagePassingRulesBase.rule_coverage(LinearContinuousTransition)
 The original node remains appropriate for other transformations, including affine and nonlinear
 ones. Neither node supplies belief-propagation rules.
 
-## Separate scalar state ports
-
-[`ScalarLinearContinuousTransition`](@ref), also exported as [`ScalarCT`](@ref), represents
-the same density with `n` individual scalar `y` ports and `m` individual scalar `x` ports.
-It accepts `LCTVMP(n, m)` or the cached `SLCTVMP(n, m)` and declares
-`[:y..., :x..., :a, :W]`. The parameter vector and precision matrix remain multivariate.
-No Jacobians are evaluated.
-
-Two factorizations are supported:
-
-- `q(y)q(x)q(a)q(W)`: each state group retains its full covariance.
-- `q(y,x)q(a)q(W)`: the joint retains covariance across both state groups as well, in `[y; x]` order.
-
-`MeanField()` would split every scalar port independently and is not supported for groups
-larger than one; use the explicit group constraints below.
-
-Incoming state messages must be univariate Gaussians. Outgoing scalar messages eliminate
-the other coordinates with a Schur complement, including their incoming messages and
-excluding the target's own message. They are not obtained by taking the diagonal of a
-block message. With independent incoming state messages, the full local joint agrees with
-`LinearContinuousTransition` supplied with the corresponding diagonal incoming covariances.
-Separate scalar ports cannot represent arbitrary correlations in incoming block messages.
-
-### Calling rules directly
-
-Address a port by `(:y, k)` or `(:x, k)`. Message tuples have the full group length and
-`nothing` at the target's own position. Group marginals use `clusters`, not a tuple of
-independent scalar marginals:
-
-```@example ct
-scalar_parameters = (
-    a = MvNormalMeanCovariance(vec([1.0 0.0 1.0; 0.0 1.0 1.0]), Matrix(0.1I, 6, 6)),
-    W = Wishart(4.0, Matrix(0.25I, 2, 2)),
-)
-incoming_y = NormalMeanVariance(0.5, 1.0)
-incoming_x = (NormalMeanVariance(1.0, 1.0), NormalMeanVariance(2.0, 1.0), NormalMeanVariance(3.0, 1.0))
-
-# Full structured q(y,x): all other state messages are inputs.
-@call_message_update_rule(
-    node = ScalarCT, target = (:y, 1), algorithm = LCTVMP(2, 3),
-    m = (y = (nothing, incoming_y), x = incoming_x), q = scalar_parameters,
-)
-```
-
-```@example ct
-# Separate q(y)q(x): the other group supplies its full joint marginal.
-@call_message_update_rule(
-    node = ScalarCT, target = (:y, 1), algorithm = LCTVMP(2, 3),
-    m = (y = (nothing, incoming_y),), q = scalar_parameters,
-    clusters = ((:x,) => MvNormalMeanCovariance([1.0, 2.0, 3.0], Matrix(1.0I, 3, 3)),),
-)
-```
-
-Marginal targets are `(:y,)`, `(:x,)`, and `(:y, :x)`, with all incoming messages in their
-respective groups. Messages to `a` and `W` and the average energy take either the full joint
-`clusters = ((:y, :x) => qyx,)` or separate groups
-`clusters = ((:y,) => qy, (:x,) => qx)`. The message towards `a` requires no `q(a)`.
-
-The engine's scalar representation of a singleton group is accepted too. An outgoing
-singleton port may omit its own message group entirely. Other missing messages, partial
-groupings, and independent scalar marginals for larger groups are rejected. Wrong counts
-raise `DimensionMismatch` during rule execution, before working buffers are used.
-
-### Caching computations across ports
-
-Use [`SLCTVMP`](@ref)`(n, m; T = Float64)` to allocate shared working matrices at algorithm
-construction. The same instance serves all rules of **one node**, for either supported
-factorization. `T` fixes the floating-point precision of the cache; use `T = Float32` for
-Float32 inference. Inputs are converted to that working precision for cached computations.
-
-!!! warning "One algorithm instance per node"
-    **Do not share an `SLCTVMP` instance between nodes.** Their rules would write into the
-    same cache. Each node needs a freshly constructed instance, and calls using that instance
-    must run serially. Inside a model loop, construct `SLCTVMP(n, m)` in each node's
-    `where { algorithm = ... }` declaration; do not pass one shared instance to every node.
-
-```@example ct
-cached_algorithm = SLCTVMP(2, 3) # Allocate once for this node, reuse across its updates.
-@call_message_update_rule(
-    node = ScalarCT, target = (:y, 1), algorithm = cached_algorithm,
-    m = (y = (nothing, incoming_y), x = incoming_x), q = scalar_parameters,
-)
-```
-
-The algorithm snapshots the parameters of `q(a)` and reuses its moments, the transition
-precision, and completed Gaussian solves across scalar ports. It compares numerical values
-on each call, so modifying an existing distribution's arrays also invalidates the relevant
-cache. Changing incoming weighted means alone reuses the solve; changing a contributing
-precision rebuilds it. The first sweep may require additional solves as messages arrive.
-During asynchronous inference, precision changes between ports can reduce the benefit.
-
-Every outgoing scalar message still excludes its own incoming message. The cached solve
-includes a temporary or previously seen prior on the excluded coordinate; that contribution
-cancels in the Schur complement. Both factorizations produce the same messages, group
-marginals, and energies as `ScalarCT` with `LCTVMP`, to floating-point precision.
-
-Moment and residual buffers are also reused for parameter and energy updates. Returned
-distributions own their arrays and remain valid after later calls. The cache trades retained
-per-node memory for less repeated work; it does not remove output allocations, all input
-moment allocations, or rule-dispatch costs. `LCTVMP` remains available as an immutable,
-shareable configuration with independent scratch per rule stream.
-
-`benchmark/scalar_cached.jl` compares all scalar state messages, the messages to `a` and
-`W`, and the average energy in one sweep. For `n = m = 10`, with `q(a)` changing before
-every sweep, a local run on Julia 1.13.3 with one BLAS thread measured:
-
-| Factorization | Representation of `q(a)` | `LCTVMP` | `SLCTVMP` | Speedup |
-|---|---|---:|---:|---:|
-| Separate groups | Mean/covariance | 192 μs | 130 μs | 1.5× |
-| Full joint | Mean/covariance | 336 μs | 132 μs | 2.6× |
-| Separate groups | Weighted mean/precision | 2443 μs | 256 μs | 9.5× |
-| Full joint | Weighted mean/precision | 3667 μs | 256 μs | 14.3× |
-
-These are warmed rule timings, including returned allocations and excluding construction;
-they are not end-to-end inference speedups. The larger gains for precision representations
-come from reusing `q(a)`'s covariance instead of inverting its precision for every scalar
-port. This shape retains about 268 kB in its algorithm cache. Actual gains depend on shape,
-input representation, and update order; run the benchmark for your workload.
-
-### RxInfer model
-
-The indexed left-hand side creates separate scalar output variables attached to one factor:
-
-```julia
-using RxInfer, ContinuousTransitionMessagePassingRules, LinearAlgebra
-
-@model function scalar_transition_example(z, n, m)
-    local x
-    for j in 1:m
-        x[j] ~ NormalMeanVariance(0.5, 1.0)
-    end
-    a ~ MvNormalMeanCovariance(ones(n * m), Matrix{Float64}(I, n * m, n * m))
-    W ~ Wishart(n + 2, Matrix{Float64}(I, n, n))
-
-    y[1:n] ~ ScalarLinearContinuousTransition(x = x, a = a, W = W) where {
-        algorithm = SLCTVMP(n, m) # A fresh cache for this factor node.
-    }
-    for i in 1:n
-        z[i] ~ NormalMeanVariance(y[i], 0.1)
-    end
-end
-
-structured = @constraints begin
-    q(y, x, a, W) = q(y, x)q(a)q(W)
-end
-separate = @constraints begin
-    q(y, x, a, W) = q(y)q(x)q(a)q(W)
-end
-
-n, m = 2, 3
-init = @initialization begin
-    q(a) = MvNormalMeanCovariance(ones(n * m), Matrix{Float64}(I, n * m, n * m))
-    q(W) = Wishart(n + 2, Matrix{Float64}(I, n, n))
-end
-result = infer(
-    model = scalar_transition_example(n = n, m = m), data = (z = [1.0, 0.5],),
-    constraints = structured, initialization = init, iterations = 10, free_energy = true,
-)
-```
-
-!!! warning "Separate-group inference in RxInfer"
-    Both factorizations are tested against the block rules through direct rule calls.
-    The example above runs the full joint factorization. With the installed ReactiveMP 7.0.0,
-    changing it to `constraints = separate` stalled without producing all requested
-    posteriors or free-energy values, including in probes with explicit initial local marginals.
-    Separate-group end-to-end inference therefore remains an integration limitation;
-    the implementation does not modify RxInfer or ReactiveMP scheduling.
-
-With `LCTVMP`, each scalar rule repeats an elimination using its own reusable working
-matrices. `SLCTVMP` shares computations across the ports of one node; use the benchmarks
-to compare workloads for your dimensions. The scalar interface connects state components
-independently while retaining local group covariance.
-
 ## A convolution as one node
 
 [`Conv2dContinuousTransition`](@ref), also exported as [`Conv2dCT`](@ref), is a whole
 two-dimensional convolution with scalar ports: every output position `p` has
 `y[:, p] ~ N(A * patch(x, p), W⁻¹)` with the same `A = reshape(a, C_out, kh * kw * C_in)` and
-the same `C_out × C_out` precision `W`. Its interfaces are `[:y..., :x..., :a, :W]`, as for
-`ScalarCT`, and its algorithm [`Conv2dVMP`](@ref) carries the geometry and a cache:
+the same `C_out × C_out` precision `W`. Its interfaces are `[:y..., :x..., :a, :W]`, with `y`
+and `x` groups of scalar ports, and its algorithm [`Conv2dVMP`](@ref) carries the geometry and a cache:
 
 ```@example ct
 conv = Conv2dVMP((4, 4, 1), 2, (3, 3)) # a 4 × 4 image, 1 → 2 channels, a 3 × 3 kernel
@@ -534,9 +361,6 @@ ContinuousTransition
 CTransition
 LinearContinuousTransition
 LCTVMP
-ScalarLinearContinuousTransition
-ScalarCT
-SLCTVMP
 Conv2dContinuousTransition
 Conv2dCT
 Conv2dVMP

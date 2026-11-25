@@ -12,7 +12,7 @@ The image and the output are passed as flat groups of scalars in Julia's column-
 so `a = vec(A)` with one row of `A` per output channel. [`Conv2dVMP`](@ref) carries this
 geometry; the model only indexes `x[1:length(image)]` and `y[1:length(output)]`.
 
-Supports `q(y)q(x)q(a)q(W)` and `q(y,x)q(a)q(W)`, as [`ScalarCT`](@ref) does, and also
+Supports `q(y)q(x)q(a)q(W)` and `q(y,x)q(a)q(W)`, and also
 independent scalar marginals for a whole state group, such as the `PointMass` marginals of
 observed pixels. Incoming state messages are univariate Gaussians. The node is the exact
 linear Gaussian transition whose matrix repeats the kernel: its rules agree with
@@ -44,6 +44,87 @@ struct Conv2dContinuousTransition end
 const Conv2dCT = Conv2dContinuousTransition
 
 @define_factor_node(node = Conv2dContinuousTransition, type = Stochastic, interfaces = [:y..., :x..., :a, :W])
+
+# Snapshot distribution parameters, rather than object identities: Gaussian parameters may
+# be mutated in place. In particular, do not invert q(a)'s precision again for every port.
+mutable struct Conv2dGaussianCache{T}
+    representation::Int
+    version::Int
+    p::Vector{T}
+    P::Matrix{T}
+    scale::T
+    μ::Vector{T}
+    V::Matrix{T}
+    factor::Matrix{T}
+end
+
+Conv2dGaussianCache(::Type{T}, d) where {T} = Conv2dGaussianCache(
+    0, 0, zeros(T, d), zeros(T, d, d), zero(T), zeros(T, d), zeros(T, d, d), zeros(T, d, d),
+)
+
+conv_gaussian_parameters(q::Union{MvNormalMeanCovariance, MvNormal}) = (1, BayesBase.params(q)...)
+conv_gaussian_parameters(q::MvNormalMeanPrecision) = (2, BayesBase.params(q)...)
+conv_gaussian_parameters(q::MvNormalWeightedMeanPrecision) = (3, BayesBase.params(q)...)
+conv_gaussian_parameters(q::MvNormalMeanScalePrecision) = (4, BayesBase.params(q)...)
+
+function conv_equal(a::AbstractArray{T}, b) where {T}
+    size(a) == size(b) || return false
+    same = true
+    # Scan snapshots without allocating, with a vectorisable reduction for dense arrays.
+    @inbounds @simd for i in eachindex(a, b)
+        same &= isequal(a[i], T(b[i]))
+    end
+    return same
+end
+
+function conv_identity!(A)
+    fill!(A, zero(eltype(A)))
+    for i in axes(A, 1)
+        A[i, i] = one(eltype(A))
+    end
+    return A
+end
+
+function conv_gaussian!(c::Conv2dGaussianCache{T}, q) where {T}
+    representation, p, P = conv_gaussian_parameters(q)
+    d = length(c.p)
+    lct_size(p, (d,), :a)
+    representation == 4 || lct_size(P, (d, d), :a)
+    same_matrix = c.representation == representation && (representation == 4 ? isequal(c.scale, T(P)) : conv_equal(c.P, P))
+    same_matrix && conv_equal(c.p, p) && return c
+    c.representation = 0 # A failed factorisation must not leave a valid cache entry.
+    if !same_matrix
+        if representation == 4
+            c.scale = P
+            conv_identity!(c.V)
+            c.V ./= c.scale
+        else
+            c.P .= P
+            if representation == 1
+                c.V .= c.P
+            else
+                c.factor .= c.P
+                conv_identity!(c.V)
+                ldiv!(cholesky!(Symmetric(c.factor)), c.V)
+            end
+        end
+    end
+    c.p .= p
+    if representation == 3
+        mul!(c.μ, c.V, c.p)
+    else
+        c.μ .= c.p
+    end
+    c.representation = representation
+    c.version += 1
+    return c
+end
+
+function conv_count(values, d, group)
+    values isa Tuple || throw(ArgumentError("$group must be a tuple of scalar Gaussian messages or marginals"))
+    length(values) == d || throw(DimensionMismatch("$group must contain $d members, got $(length(values))"))
+    return values
+end
 
 """
     Conv2dMarginal{T}
@@ -114,7 +195,7 @@ end
 Conv2dBand(::Type{T}, b, nx) where {T} = Conv2dBand(zeros(T, b + 1, nx), zeros(T, b + 1, nx), zeros(T, b + 1, nx), zeros(T, nx))
 
 mutable struct Conv2dCache{T}
-    a::SLCTGaussianCache{T}
+    a::Conv2dGaussianCache{T}
     a_version::Int
     version::Int
     W::Matrix{T}
@@ -172,8 +253,7 @@ node behaves in an inference engine:
   No message is sent towards `x`.
 
 **Create a separate instance for every node**, inside its `where { algorithm = ... }`
-declaration, as for [`SLCTVMP`](@ref): rules of one instance write into the same cache and
-must run serially.
+declaration: rules of one instance write into the same cache and must run serially.
 
 Latent inputs are solved exactly in a banded system over `x`: the outputs of every position
 are eliminated in closed form, `x` is ordered so that a patch spans a narrow band, and a
@@ -254,7 +334,7 @@ function Conv2dVMP(
     ptaps = map(t -> t == 0 ? 0 : order[t], taps)
     z(dims...) = zeros(T, dims...)
     cache = Conv2dCache{T}(
-        SLCTGaussianCache(T, n * m), -1, 0, z(n, n), z(n, m), z(m, m), nothing, nothing, nothing, nothing,
+        Conv2dGaussianCache(T, n * m), -1, 0, z(n, n), z(n, m), z(m, m), nothing, nothing, nothing, nothing,
         fill(T(NaN), n), z(n, n), z(n, m), z(m, m), zero(T), z(m, m), z(n, m), z(n, n), z(m), z(n),
         z(m, m), z(n, m), z(n, n), z(n, m), z(n, n), z(n, n),
     )
@@ -318,7 +398,7 @@ end
 
 function conv_scalars(algo, q, group)
     group in keys(q) || return nothing
-    values = slct_count(q[group], conv_dimension(algo, group), group)
+    values = conv_count(q[group], conv_dimension(algo, group), group)
     conv_all_scalars(values) || conv_layout_error()
     return values
 end
@@ -349,7 +429,7 @@ function conv_messages(algo, @nospecialize(args), name, k)
         d == 1 && k == 1 && return (nothing,)
         throw(ArgumentError("missing incoming messages for $name (expected $d members)"))
     end
-    return slct_count(args.m[name], d, name)
+    return conv_count(args.m[name], d, name)
 end
 
 function conv_message_parameters(@nospecialize(value), name, i)

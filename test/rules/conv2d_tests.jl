@@ -216,7 +216,7 @@ end
     end
 end
 
-@testitem "rules:Conv2dVMP:one ScalarCT per position" tags = [:rules] setup = [Conv2dReference] begin
+@testitem "rules:Conv2dVMP:one LinearCT per position" tags = [:rules] setup = [Conv2dReference] begin
     rng = StableRNG(514)
     for (insize, cout, kernel, options) in geometries[1:3]
         algorithm = Conv2dVMP(insize, cout, kernel; options...)
@@ -225,12 +225,12 @@ end
         qa = MvNormalMeanCovariance(randn(rng, n * m), 0.2 * spd(rng, Float64, n * m))
         qW = Wishart(n + 3.0, spd(rng, Float64, n) / (n + 3))
         clusters = ((:y, :x) => qyx,)
-        # Every position is a ScalarCT on its own patch, sharing a and W: multiply their messages.
+        # Every position is a LinearCT on its own patch, sharing a and W: multiply their messages.
         patches = map(1:P) do p
             index = [p .+ (0:(n - 1)) .* P; ny .+ algorithm.taps[:, p]]
             ((:y, :x) => MvNormalMeanCovariance(mean(qyx)[index], cov(qyx)[index, index]),)
         end
-        each(target, q) = [getresult(call_message_update_rule(ScalarCT, target; algorithm = LCTVMP(n, m), clusters = patch, q)) for patch in patches]
+        each(target, q) = [getresult(call_message_update_rule(LinearContinuousTransition, target; algorithm = LCTVMP(n, m), clusters = patch, q)) for patch in patches]
         towards_a = getresult(call_message_update_rule(Conv2dCT, :a; algorithm, clusters, q = (W = qW,)))
         ξ, Λ = weightedmean_precision(towards_a)
         @test ξ ≈ sum(first ∘ weightedmean_precision, each(:a, (W = qW,)))
@@ -238,7 +238,7 @@ end
         towards_W = getresult(call_message_update_rule(Conv2dCT, :W; algorithm, clusters, q = (a = qa,)))
         @test towards_W.ν == sum(w -> w.ν, each(:W, (a = qa,))) - (P - 1) * (n + 1)
         @test towards_W.invS ≈ sum(w -> w.invS, each(:W, (a = qa,)))
-        energies = [getresult(call_average_energy(ScalarCT; algorithm = LCTVMP(n, m), clusters = patch, q = (a = qa, W = qW))) for patch in patches]
+        energies = [getresult(call_average_energy(LinearContinuousTransition; algorithm = LCTVMP(n, m), clusters = patch, q = (a = qa, W = qW))) for patch in patches]
         @test getresult(call_average_energy(Conv2dCT; algorithm, clusters, q = (a = qa, W = qW))) ≈ sum(energies)
     end
 end
@@ -380,13 +380,17 @@ end
     # A precision that is not positive definite is an error, not a silent result.
     @test_throws LinearAlgebra.PosDefException getresult(call_marginal_update_rule(Conv2dCT, (:y, :x); algorithm, m = (y = y, x = ntuple(_ -> NormalWeightedMeanPrecision(0.0, -50.0), 4)), q))
 
-    # A single output and a single input: the engine's scalar forms.
+    # A single output and a single input, in the engine's scalar forms: the 1 × 1 LinearCT.
     single = Conv2dVMP((1, 1, 1), 1, (1, 1))
     q1 = (a = MvNormalMeanCovariance([2.0], [0.3;;]), W = Wishart(3.0, [0.5;;]))
-    for (group, other) in ((:y, :x), (:x, :y)), inputs in ((m = NamedTuple{(other,)}(((s,),)), q = q1), (q = merge(q1, NamedTuple{(other,)}(((s,),))),))
-        actual = getresult(call_message_update_rule(Conv2dCT, (group, 1); algorithm = single, inputs...))
-        expected = getresult(call_message_update_rule(ScalarCT, (group, 1); algorithm = LCTVMP(1, 1), inputs...))
-        @test all(isapprox.(params(actual), params(expected)))
+    block = MvNormalMeanCovariance([0.0], [1.0;;])
+    for (group, other) in ((:y, :x), (:x, :y)), structured in (true, false)
+        scalar = structured ? (m = NamedTuple{(other,)}(((s,),)), q = q1) : (q = merge(q1, NamedTuple{(other,)}(((s,),))),)
+        dense = structured ? (m = NamedTuple{(other,)}((block,)), q = q1) : (q = merge(q1, NamedTuple{(other,)}((block,))),)
+        actual = getresult(call_message_update_rule(Conv2dCT, (group, 1); algorithm = single, scalar...))
+        expected = getresult(call_message_update_rule(LinearContinuousTransition, group; algorithm = LCTVMP(1, 1), dense...))
+        @test mean(actual) ≈ only(mean(expected))
+        @test var(actual) ≈ only(cov(expected))
     end
 end
 

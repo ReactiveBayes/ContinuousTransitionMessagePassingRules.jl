@@ -42,21 +42,6 @@ end
     @test !("MessagePassingRulesTestUtils" in closure)
 end
 
-@testitem "quality:scalar linear node" tags = [:quality] begin
-    using ContinuousTransitionMessagePassingRules, MessagePassingRulesBase
-    using MessagePassingRulesBase: interfaces, interface_groups, dependencies_spec, target_dependencies, extends_default_scheme, Target, IndexedTarget, default_algorithm
-    @test ScalarCT === ScalarLinearContinuousTransition
-    @test interfaces(ScalarCT) == (:y, :x, :a, :W)
-    @test interface_groups(ScalarCT) == (:y, :x)
-    spec = dependencies_spec(ScalarCT, LCTVMP(2, 3))
-    for edge in ((:y, 1), (:y, 2), (:x, 1), (:x, 3), :a, :W)
-        target = edge isa Symbol ? Target(edge) : IndexedTarget(edge...)
-        @test extends_default_scheme(spec, target)
-        @test isempty(target_dependencies(spec, target))
-    end
-    @test default_algorithm(ScalarCT) === DefaultAlgorithm()
-end
-
 @testitem "quality:doctests" tags = [:quality] begin
     using Documenter, ContinuousTransitionMessagePassingRules
     DocMeta.setdocmeta!(ContinuousTransitionMessagePassingRules, :DocTestSetup, :(using ContinuousTransitionMessagePassingRules); recursive = true)
