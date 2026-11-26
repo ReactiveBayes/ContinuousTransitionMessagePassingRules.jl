@@ -36,6 +36,22 @@ result = @call_message_update_rule(
 )
 ```
 
+For a convolution, `Conv2dContinuousTransition` (alias `Conv2dCT`) takes a flat image
+`x = vec(image)` and a flat output `y`, one node per image, with the geometry in its cached
+algorithm:
+
+```julia
+y[1:ny] ~ Conv2dCT(x = x[1:nx], a = a, W = W) where {
+    algorithm = Conv2dVMP((H, W, C_in), C_out, (kh, kw); ports = :joint)
+}
+```
+
+It agrees with `ContinuousTransition` under `CTVMP` given the matrix that repeats the kernel
+and independent state messages, solves latent images in a banded system instead of a dense
+one, accepts observed pixels, and is described in the
+[convolution documentation](docs/src/index.md#a-convolution-as-one-node).
+`benchmark/conv2d.jl` compares it with `CTVMP` rule by rule.
+
 ```julia
 import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
 ```
@@ -48,9 +64,11 @@ import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
 - Julia 1.10 or later. MIT licence.
 
 To compare all rules against reshape-based `CTVMP`, including runtime and allocations with
-reused scratch, run from the repository root:
+reused scratch, and every `Conv2dCT` rule against `CTVMP` with the convolution matrix, run
+from the repository root:
 
 ```sh
 julia --project=benchmark -e 'import Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=benchmark benchmark/linear.jl
+julia --project=benchmark benchmark/conv2d.jl
 ```

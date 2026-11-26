@@ -1,14 +1,14 @@
 # Run from the repository root; setup instructions are in README.md.
 using ContinuousTransitionMessagePassingRules, MessagePassingRulesBase, BayesBase, ExponentialFamily
 using BenchmarkTools, LinearAlgebra, Random, Printf, Plots
-using MessagePassingRulesBase: Target, ClusterTarget, RuleContext, NoAnnotations,
+using MessagePassingRulesBase: Target, IndexedTarget, ClusterTarget, RuleContext, NoAnnotations,
     find_message_rule, find_marginal_rule, find_average_energy, rule_scratch, execute_rule
 
 # Resolve once and reuse scratch, as an inference engine does. Setting reuse=false measures
 # the same execution path with fresh scratch on each call, isolating its allocation cost.
 function prepared(node, algorithm, kind, edge, inputs; reuse = true)
     args = MessagePassingRulesBase.interactive_args(get(inputs, :m, (;)), get(inputs, :q, (;)), get(inputs, :clusters, ()))
-    target = kind === :message ? Target(edge) : kind === :marginal ? ClusterTarget(edge) : nothing
+    target = kind === :message ? (edge isa Tuple ? IndexedTarget(edge...) : Target(edge)) : kind === :marginal ? ClusterTarget(edge) : nothing
     spec = kind === :message ? find_message_rule(node, target, algorithm, args) :
         kind === :marginal ? find_marginal_rule(node, target, algorithm, args) : find_average_energy(node, algorithm, args)
     scratch = reuse ? rule_scratch(spec, algorithm, RuleContext(), args, target) : nothing
@@ -72,4 +72,6 @@ function benchmark()
     return
 end
 
-benchmark()
+if abspath(PROGRAM_FILE) == @__FILE__
+    benchmark()
+end
