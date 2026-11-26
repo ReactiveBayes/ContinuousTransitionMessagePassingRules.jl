@@ -6,6 +6,8 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-26
+
 ### Added
 
 - `Conv2dContinuousTransition` (alias `Conv2dCT`) with
