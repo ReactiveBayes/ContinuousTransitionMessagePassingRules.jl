@@ -72,4 +72,5 @@ from the repository root:
 julia --project=benchmark -e 'import Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=benchmark benchmark/linear.jl
 julia --project=benchmark benchmark/conv2d.jl
+julia --project=benchmark benchmark/conv2d_cache.jl
 ```

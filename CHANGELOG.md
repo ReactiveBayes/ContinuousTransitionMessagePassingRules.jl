@@ -17,10 +17,10 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
     bandwidth `b`, with no dense matrix over the ports.
   - Group marginals are `Conv2dMarginal`s: means, variances, the message towards every port,
     the summed patch moments and the entropy. The messages towards `a` and `W` and the
-    energy read those moments and invert nothing.
+    energy read those moments; kernel moments are cached across calls.
   - `ports = :joint`, `:separate` or `:observed` makes every port read its message from its
-    group's marginal, so that an engine runs one rule for all ports and the node solves once
-    per iteration; `:default` follows the engine's default scheme.
+    group's marginal, with one solve per group marginal update; `:default` follows the
+    engine's default scheme.
   - Tested against `ContinuousTransition` under `CTVMP` with the convolution matrix and
     independent (diagonal) state messages, for every rule. `integration/conv2d_vs_ctvmp.jl`
     compares the two end to end in RxInfer, `benchmark/conv2d.jl` rule by rule, and
@@ -29,6 +29,16 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
 ### Optimization
 
 - Optimization for `lct_uncertainty!` method.
+- Reuse scalar moment buffers in Conv2d's default port scheme and avoid duplicate
+  cross-moment accumulation for independent inputs.
+
+### Fixed
+
+- Conv2d outgoing messages avoid cancellation against large incoming natural parameters;
+  pixels outside all patches receive exact zero messages.
+- Failed Conv2d solves invalidate cached results, and explicit observed inputs take
+  precedence over moments retained by an older group marginal.
+- Conv2d test keyword splatting is compatible with Julia 1.10–1.12.
 
 ## [1.1.0] - 2026-11-21
 

@@ -102,7 +102,8 @@ function main(side = 4, batch = 2, cout = 1, path = nothing; kernel = (3, 3), no
         println("picture saved to ", picture(path, batch_images, outputs, split(z), split(mean.(result.posteriors[:y]))))
     end
     @assert all(isfinite, result.free_energy)
-    # Small rises after convergence are tolerated; see the note in the documentation.
+    # Allow rises up to 1% of the total free-energy decrease to tolerate small
+    # fluctuations after convergence in this example.
     @assert maximum(diff(result.free_energy)) <= 0.01 * (result.free_energy[1] - minimum(result.free_energy))
     @assert err < 0.1
     return result

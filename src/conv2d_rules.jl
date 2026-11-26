@@ -97,7 +97,12 @@ function conv_uniform_scalars!(μ::Vector{T}, v::Vector{T}, q::Tuple) where {T}
     return nothing
 end
 
-conv_means(q, ::Type{T}) where {T} = q isa Tuple ? first(conv_mean_var(q, T)) : convert(Vector{T}, mean(q))
+conv_means(q, ::Type{T}) where {T} = convert(Vector{T}, mean(q))
+function conv_means(q::Tuple, ::Type{T}) where {T}
+    μ = zeros(T, length(q))
+    conv_update_moments!(μ, nothing, q)
+    return μ
+end
 
 # The outputs of position p given everything else: B = W + diag(λ) and its inverse, kept
 # while the precisions of the incoming messages repeat from position to position.
@@ -138,16 +143,14 @@ function conv_block!(c::Conv2dCache{T}, algo, λy, p, joint) where {T}
     return c
 end
 
-# The system over x in its banded order: Σ_p scatter(M_p) + diag(λx), and its right-hand side.
+# Keep the factor's contributions separate from incoming messages, so cavities never
+# subtract large incoming natural parameters from the posterior's parameters.
 # With `ξy` the outputs are eliminated first (the joint); with `my` they are given (q(y)).
 function conv_x_system!(algo::Conv2dVMP{T}, c, band, ξy, λy, my, ξx, λx) where {T}
     n, m, P, ptaps, order = algo.n, algo.m, algo.positions, algo.ptaps, algo.order
-    J, rhs = band.system, band.rhs
+    J, h, rhs = band.system, band.factor_rhs, band.rhs
     fill!(J, zero(T))
-    @inbounds for i in 1:algo.nx
-        rhs[order[i]] = ξx[i]
-        J[1, order[i]] = λx[i]
-    end
+    fill!(h, zero(T))
     joint = ξy !== nothing
     fill!(c.Bλ, NaN)
     logdetB = zero(T)
@@ -170,7 +173,7 @@ function conv_x_system!(algo::Conv2dVMP{T}, c, band, ξy, λy, my, ξx, λx) whe
                     g += c.WA[i, j] * my[p + (i - 1) * P]
                 end
             end
-            rhs[tj] += g
+            h[tj] += g
             for l in 1:m
                 tl = ptaps[l, p]
                 tl >= tj && tl != 0 && (J[tl - tj + 1, tj] += M[l, j])
@@ -178,6 +181,11 @@ function conv_x_system!(algo::Conv2dVMP{T}, c, band, ξy, λy, my, ξx, λx) whe
         end
     end
     band.factor .= J
+    @inbounds for i in 1:algo.nx
+        t = order[i]
+        band.factor[1, t] += λx[i]
+        rhs[t] = h[t] + ξx[i]
+    end
     banded_cholesky!(band.factor)
     banded_solve!(rhs, band.factor)
     banded_selected_inverse!(band.inverse, band.factor)
@@ -200,22 +208,26 @@ end
 
 # The message towards every x port from the solved system: the precision as a Schur
 # complement over the port's row, which does not subtract its own incoming precision.
-function conv_x_messages!(ξout, λout, μ, v, algo::Conv2dVMP{T}, band, ξx, λx, offset) where {T}
+function conv_x_messages!(ξout, λout, μ, v, algo::Conv2dVMP{T}, band, offset) where {T}
     b, N = algo.bandwidth, algo.nx
     J, Z = band.system, band.inverse
     @inbounds for i in 1:N
         t = algo.order[i]
         vt = Z[1, t]
         total = zero(T)
-        for d in 1:min(b, N - t)
+        weighted = band.factor_rhs[t]
+        @simd for d in 1:min(b, N - t)
             total += J[d + 1, t] * Z[d + 1, t]
+            weighted -= J[d + 1, t] * band.rhs[t + d]
         end
-        for d in 1:min(b, t - 1)
+        @simd for d in 1:min(b, t - 1)
             total += J[d + 1, t - d] * Z[d + 1, t - d]
+            weighted -= J[d + 1, t - d] * band.rhs[t - d]
         end
         μ[offset + i], v[offset + i] = band.rhs[t], vt
-        λout[offset + i] = J[1, t] - λx[i] + total / vt
-        ξout[offset + i] = band.rhs[t] / vt - ξx[i]
+        correction = total / vt
+        λout[offset + i] = J[1, t] + correction
+        ξout[offset + i] = weighted + correction * band.rhs[t]
     end
     return nothing
 end
@@ -257,7 +269,7 @@ function conv_solve_joint(algo::Conv2dVMP{T}, c, ξy, λy, ξx, λx) where {T}
     band = conv_band!(algo)
     logdetB = conv_x_system!(algo, c, band, ξy, λy, nothing, ξx, λx)
     μ, v, ξout, λout = (Vector{T}(undef, ny + nx) for _ in 1:4)
-    conv_x_messages!(ξout, λout, μ, v, algo, band, ξx, λx, ny)
+    conv_x_messages!(ξout, λout, μ, v, algo, band, ny)
     conv_reset_moments!(c)
     fill!(c.Bλ, NaN)
     W, WA = c.W, c.WA
@@ -277,15 +289,20 @@ function conv_solve_joint(algo::Conv2dVMP{T}, c, ξy, λy, ξx, λx) where {T}
             k = p + (i - 1) * P
             vk = c.Cyy[i, i]
             total = zero(T)
+            weighted = zero(T)
             for j in 1:n
-                j == i || (total += W[i, j] * c.Cyy[j, i])
+                if j != i
+                    total += W[i, j] * c.Cyy[j, i]
+                    weighted -= W[i, j] * c.μy[j]
+                end
             end
             for j in 1:m
                 total -= WA[i, j] * c.Cyx[i, j]
+                weighted += WA[i, j] * c.μp[j]
             end
             μ[k], v[k] = c.μy[i], vk
             λout[k] = W[i, i] + total / vk
-            ξout[k] = c.μy[i] / vk - ξy[k]
+            ξout[k] = weighted + (total / vk) * c.μy[i]
         end
     end
     entropy = conv_entropy(ny + nx, logdetB + banded_logdet(band.factor))
@@ -298,9 +315,7 @@ function conv_solve_x(algo::Conv2dVMP{T}, c, my, ξx, λx) where {T}
     band = conv_band!(algo)
     conv_x_system!(algo, c, band, nothing, nothing, my, ξx, λx)
     μ, v, ξout, λout = (Vector{T}(undef, nx) for _ in 1:4)
-    conv_x_messages!(ξout, λout, μ, v, algo, band, ξx, λx, 0)
-    # The outputs' means enter the right-hand side, which is not part of the message's own
-    # incoming message: nothing more to exclude.
+    conv_x_messages!(ξout, λout, μ, v, algo, band, 0)
     conv_reset_moments!(c)
     for p in 1:algo.positions
         conv_patch!(c, algo, band, p)
@@ -329,25 +344,30 @@ function conv_solve_y(algo::Conv2dVMP{T}, c, ξy, λy, mx, vx) where {T}
             c.μp[j] = t == 0 ? zero(T) : mx[t]
             complete && (c.Vpp[j, j] = t == 0 ? zero(T) : vx[t])
         end
-        # E[y_p] = B⁻¹ (ξ_p + WA E[patch]), with the first column of c.Cyx as working memory.
+        # Keep WA E[patch] separate from the incoming weighted mean for the cavities.
         h = view(c.Cyx, :, 1)
         mul!(h, c.WA, c.μp)
+        rhs = view(c.BW, :, 1)
         for i in 1:n
-            h[i] += ξy[p + (i - 1) * P]
+            rhs[i] = h[i] + ξy[p + (i - 1) * P]
         end
-        mul!(c.μy, c.Binv, h)
+        mul!(c.μy, c.Binv, rhs)
         c.Cyy .= c.Binv
         conv_add_moments!(c, algo, true, complete, false)
         for i in 1:n
             k = p + (i - 1) * P
             vk = c.Binv[i, i]
             total = zero(T)
+            weighted = h[i]
             for j in 1:n
-                j == i || (total += W[i, j] * c.Binv[j, i])
+                if j != i
+                    total += W[i, j] * c.Binv[j, i]
+                    weighted -= W[i, j] * c.μy[j]
+                end
             end
             μ[k], v[k] = c.μy[i], vk
             λout[k] = W[i, i] + total / vk
-            ξout[k] = c.μy[i] / vk - ξy[k]
+            ξout[k] = weighted + (total / vk) * c.μy[i]
         end
     end
     empty = zeros(T, 0, 0)
@@ -385,6 +405,40 @@ function conv_update!(target::AbstractVector{T}, source) where {T}
     return true
 end
 
+# Update cached scalar moments without allocating temporary vectors on every port call.
+# A missing variance buffer means only the mean is needed.
+function conv_update_scalar!(μ::AbstractVector{T}, v, i, q) where {T}
+    a = T(mean(q)::Real)
+    changed = !isequal(μ[i], a)
+    μ[i] = a
+    if v !== nothing
+        b = q isa PointMass ? zero(T) : T(var(q)::Real)
+        changed |= !isequal(v[i], b)
+        v[i] = b
+    end
+    return changed
+end
+
+function conv_uniform_update_moments!(μ, v, q::Tuple)
+    changed = false
+    @inbounds for i in eachindex(μ)
+        changed |= conv_update_scalar!(μ, v, i, q[i])
+    end
+    return changed
+end
+
+function conv_update_moments!(μ, v, @nospecialize(q::Tuple))
+    isconcretetype(eltype(q)) && return conv_uniform_update_moments!(μ, v, q)
+    changed = false
+    for i in eachindex(μ)
+        changed |= conv_update_scalar!(μ, v, i, q[i])
+    end
+    return changed
+end
+
+conv_update_means!(μ, q::Tuple) = conv_update_moments!(μ, nothing, q)
+conv_update_means!(μ, q) = conv_update!(μ, mean(q))
+
 # Solve the system of `block`, or reuse the last solve when nothing it depends on changed.
 # `k` is the port whose own message is missing (0 for none): it keeps the value last seen
 # there, which the message towards it does not depend on.
@@ -396,6 +450,9 @@ function conv_solve!(algo::Conv2dVMP{T}, @nospecialize(args), qs, block, group, 
     s = conv_solved!(c, algo, block)
     ny, nx = algo.ny, algo.nx
     changed = s.version != c.version || s.result === nothing
+    # Input snapshots are updated in place. A validation or solve failure must leave this
+    # entry invalid, even when the next call supplies exactly the same inputs.
+    s.version = -1
     if block === :yx
         ξy, λy, ξx, λx = view(s.ξ, 1:ny), view(s.λ, 1:ny), view(s.ξ, (ny + 1):(ny + nx)), view(s.λ, (ny + 1):(ny + nx))
         changed |= conv_parameters!(ξy, λy, conv_messages(algo, args, :y, group === :y ? k : 0), :y, group === :y ? k : 0)
@@ -403,19 +460,25 @@ function conv_solve!(algo::Conv2dVMP{T}, @nospecialize(args), qs, block, group, 
         changed && (s.result = conv_solve_joint(algo, c, ξy, λy, ξx, λx))
     elseif block === :x
         changed |= conv_parameters!(s.ξ, s.λ, conv_messages(algo, args, :x, k), :x, k)
-        changed |= conv_update!(s.other, conv_means(qs.qy, T))
+        changed |= conv_update_means!(s.other, qs.qy)
         changed && (s.result = conv_solve_x(algo, c, s.other, s.ξ, s.λ))
     else
         changed |= conv_parameters!(s.ξ, s.λ, conv_messages(algo, args, :y, k), :y, k)
-        mx, vx = qs.qx isa Tuple ? conv_mean_var(qs.qx, T) : (conv_means(qs.qx, T), nothing)
-        changed |= conv_update!(view(s.other, 1:nx), mx)
-        changed |= conv_update!(view(s.other, (nx + 1):(2nx)), vx === nothing ? fill(T(-1), nx) : vx)
+        mx, vx = view(s.other, 1:nx), view(s.other, (nx + 1):(2nx))
+        if qs.qx isa Tuple
+            changed |= conv_update_moments!(mx, vx, qs.qx)
+        else
+            changed |= conv_update_means!(mx, qs.qx)
+            changed |= any(!isequal(T(-1)), vx)
+            fill!(vx, T(-1))
+            vx = nothing
+        end
         changed && (s.result = conv_solve_y(algo, c, s.ξ, s.λ, mx, vx))
     end
     if changed
-        s.version = c.version
         s.solves += 1
     end
+    s.version = c.version
     return s.result::Conv2dMarginal{T}
 end
 
@@ -506,12 +569,6 @@ function conv_cross!(c::Conv2dCache{T}, algo, my, mx) where {T}
     return c
 end
 
-function conv_all_pointmass(@nospecialize(q))
-    q isa Tuple || return false
-    M = eltype(q)
-    return (isconcretetype(M) && M <: PointMass) || all(value -> value isa PointMass, q)
-end
-
 # E[x x'], E[y x'] and E[y y'] of the patches, summed over positions: all that the messages
 # towards a and W and the energy need, since every position has the same A and W.
 function conv_moments!(algo::Conv2dVMP{T}, args) where {T}
@@ -527,8 +584,9 @@ function conv_moments!(algo::Conv2dVMP{T}, args) where {T}
         return conv_accumulate!(c, algo, my, Vy, mx, Vx, Vyx)
     end
     qy !== nothing || conv_layout_error()
-    # q(y) given observed pixels already holds the moments of their patches.
-    qy isa Conv2dMarginal && qy.complete && (qx === nothing || conv_all_pointmass(qx)) && return conv_copy_moments!(c, qy)
+    # Without q(x), use the moments retained by q(y). An explicitly supplied q(x) takes
+    # precedence: observed pixels may have changed since this q(y) was computed.
+    qy isa Conv2dMarginal && qy.complete && qx === nothing && return conv_copy_moments!(c, qy)
     qx !== nothing || conv_layout_error()
     my = conv_means(qy, T)
     if qx isa Conv2dMarginal || qx isa Tuple
@@ -541,7 +599,7 @@ function conv_moments!(algo::Conv2dVMP{T}, args) where {T}
             conv_accumulate!(c, algo, my, Vy, mx, Diagonal(vx), nothing)
         end
         qy isa Conv2dMarginal && (c.Eyy .= qy.Eyy)
-        return conv_cross!(c, algo, my, mx)
+        return qx isa Conv2dMarginal ? conv_cross!(c, algo, my, mx) : c
     end
     mx, Vx = mean_cov(qx)
     Vy = qy isa Conv2dMarginal ? nothing : qy isa Tuple ? Diagonal(last(conv_mean_var(qy, T))) : cov(qy)

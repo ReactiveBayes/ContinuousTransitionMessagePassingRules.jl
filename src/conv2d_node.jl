@@ -14,8 +14,11 @@ geometry; the model only indexes `x[1:length(image)]` and `y[1:length(output)]`.
 
 Supports `q(y)q(x)q(a)q(W)` and `q(y,x)q(a)q(W)`, and also
 independent scalar marginals for a whole state group, such as the `PointMass` marginals of
-observed pixels. Incoming state messages are univariate Gaussians. The node is the exact
-linear Gaussian transition whose matrix repeats the kernel: its rules agree with
+observed pixels. Incoming state messages must all be univariate Gaussians; a joint update
+with mixed `PointMass` and Gaussian incoming messages for a partially observed image is
+not supported. Independent scalar marginals supplied as `q(x)` may contain both types.
+The node is the exact linear Gaussian transition whose matrix repeats the kernel: its
+rules agree with
 [`ContinuousTransition`](@ref) under `CTVMP(a -> the convolution matrix of a)` given
 independent (diagonal) state messages, and overlapping patches are handled inside the node
 rather than by loops between nodes. Group marginals are [`Conv2dMarginal`](@ref)s.
@@ -186,13 +189,14 @@ Conv2dSolved(::Type{T}, d, other) where {T} = Conv2dSolved{T}(-1, zeros(T, d), o
 
 # The banded system over x: allocated on first use, since an observed image never needs it.
 struct Conv2dBand{T}
-    system::Matrix{T}
+    system::Matrix{T} # Factor precision, excluding incoming x messages.
     factor::Matrix{T}
     inverse::Matrix{T}
-    rhs::Vector{T}
+    rhs::Vector{T} # Right-hand side of the posterior system, then its solved mean.
+    factor_rhs::Vector{T} # Factor weighted mean, excluding incoming x messages.
 end
 
-Conv2dBand(::Type{T}, b, nx) where {T} = Conv2dBand(zeros(T, b + 1, nx), zeros(T, b + 1, nx), zeros(T, b + 1, nx), zeros(T, nx))
+Conv2dBand(::Type{T}, b, nx) where {T} = Conv2dBand(zeros(T, b + 1, nx), zeros(T, b + 1, nx), zeros(T, b + 1, nx), zeros(T, nx), zeros(T, nx))
 
 mutable struct Conv2dCache{T}
     a::Conv2dGaussianCache{T}
@@ -239,14 +243,13 @@ The fields `ny`, `nx`, `n = C_out`, `m = kh * kw * C_in`, `positions = H_out * W
 the patch at position `p`, or `0` for padding, and channel `c` of position `p` is
 `y[p + (c - 1) * positions]`.
 
-`ports` says what the message towards a state port is computed from, and with it how the
-node behaves in an inference engine:
+`ports` declares the dependencies used to compute the message towards a state port:
 
 - `:default`: the engine's default scheme, under any supported factorisation. Every port's
   rule receives all the other messages of its group, and one solve is reused across ports
   while the inputs stay the same.
-- `:joint`, for `q(y,x)q(a)q(W)`: every port reads its message from the joint marginal, which
-  is computed once per iteration. One rule serves all ports.
+- `:joint`, for `q(y,x)q(a)q(W)`: every port reads its message from the joint marginal.
+  Each joint marginal update performs one solve. One rule serves all ports.
 - `:separate`, for `q(y)q(x)q(a)q(W)` with latent `x`: likewise from `q(y)` and `q(x)`.
 - `:observed`, for `q(y)q(a)q(W)` with `x` given as data: likewise from `q(y)`, which also
   carries the moments of the observed patches, so no other rule reads the pixels again.

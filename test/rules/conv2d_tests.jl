@@ -86,7 +86,7 @@ end
                 test_message_update_rule(Conv2dCT, (group, k); algorithm, cases = [(clusters = clusters,) => message], check_type_promotion = false, tol...)
                 messages = group === :y ? (y = without(my, k), x = mx) : (y = my, x = without(mx, k))
                 default = getresult(call_message_update_rule(Conv2dCT, (group, k); algorithm, m = messages, q))
-                @test isapprox(collect(weightedmean_precision(default)), collect(expected[offset + k]); tol...)
+                @test isapprox(collect(weightedmean_precision(default)), collect(expected[offset + k]); pairs(tol)...)
             end
             @test_throws ArgumentError getresult(call_message_update_rule(Conv2dCT, (:y, ny + 1); algorithm, clusters))
             @test_throws ArgumentError getresult(call_message_update_rule(Conv2dCT, (:x, 0); algorithm, clusters))
@@ -139,12 +139,12 @@ end
             for k in 1:ny
                 test_message_update_rule(Conv2dCT, (:y, k); algorithm, cases = [(clusters = ((:y,) => qy,),) => NormalWeightedMeanPrecision(qy.ξ[k], qy.λ[k])], check_type_promotion = false, tol...)
                 default = getresult(call_message_update_rule(Conv2dCT, (:y, k); algorithm, m = (y = without(my, k),), q, clusters = ((:x,) => qx0,)))
-                @test isapprox(collect(weightedmean_precision(default)), collect(expectedy[k]); tol...)
+                @test isapprox(collect(weightedmean_precision(default)), collect(expectedy[k]); pairs(tol)...)
             end
             for k in 1:nx
                 test_message_update_rule(Conv2dCT, (:x, k); algorithm, cases = [(clusters = ((:x,) => qx,),) => NormalWeightedMeanPrecision(qx.ξ[k], qx.λ[k])], check_type_promotion = false, tol...)
                 default = getresult(call_message_update_rule(Conv2dCT, (:x, k); algorithm, m = (x = without(mx, k),), q, clusters = ((:y,) => qy0,)))
-                @test isapprox(collect(weightedmean_precision(default)), collect(expectedx[k]); tol...)
+                @test isapprox(collect(weightedmean_precision(default)), collect(expectedx[k]); pairs(tol)...)
             end
             @test_throws ArgumentError getresult(call_message_update_rule(Conv2dCT, (:x, 1); algorithm, clusters = ((:x,) => qy,)))
             @test_throws ArgumentError getresult(call_message_update_rule(Conv2dCT, (:y, 1); algorithm, clusters = ((:y,) => qx,)))
@@ -191,7 +191,7 @@ end
             @test qy.complete
             for k in 1:ny
                 default = getresult(call_message_update_rule(Conv2dCT, (:y, k); algorithm, m = (y = without(my, k),), q = merge(q, (x = scalars,))))
-                @test isapprox(collect(weightedmean_precision(default)), collect(expected[k]); tol...)
+                @test isapprox(collect(weightedmean_precision(default)), collect(expected[k]); pairs(tol)...)
             end
             states = (y = MvNormalMeanCovariance(μ, Matrix(Symmetric(V))), x = dense)
             towards_a = convert(MvNormalWeightedMeanPrecision, getresult(call_message_update_rule(ContinuousTransition, :a; algorithm = ct.algorithm, q = merge(qref, states))))
@@ -446,4 +446,205 @@ end
     single = convert_paramfloattype(Float32, result)
     @test single isa Conv2dMarginal{Float32} && mean(single) ≈ mean(result) && single.members === :yx
     @test sprint(show, result) == "Conv2dMarginal{Float64}(:yx, 24 members)"
+end
+
+@testitem "rules:Conv2dVMP:large incoming precisions" tags = [:rules] setup = [Conv2dReference] begin
+    rng = StableRNG(515)
+    algorithm = Conv2dVMP((3, 3, 1), 2, (2, 2); stride = (1, 2), pad = (0, 1))
+    n, m, P, ny, nx = algorithm.n, algorithm.m, algorithm.positions, algorithm.ny, algorithm.nx
+    qa = MvNormalMeanCovariance(randn(rng, n * m), 0.2 * spd(rng, Float64, n * m))
+    W = spd(rng, Float64, n)
+    q = (a = qa, W = PointMass(W))
+    my, mx = randn(rng, ny), randn(rng, nx)
+
+    # Assemble E[-∇² log f] independently in high precision, before any incoming messages.
+    A, Va, Wb = reshape(BigFloat.(mean(qa)), n, m), BigFloat.(cov(qa)), BigFloat.(W)
+    J = zeros(BigFloat, ny + nx, ny + nx)
+    for p in 1:P
+        ys = p .+ (0:(n - 1)) .* P
+        J[ys, ys] .+= Wb
+        for j in 1:m
+            tj = algorithm.taps[j, p]
+            tj == 0 && continue
+            for c in 1:n
+                cross = sum(Wb[c, d] * A[d, j] for d in 1:n)
+                J[ys[c], ny + tj] -= cross
+                J[ny + tj, ys[c]] -= cross
+            end
+            for l in 1:m
+                tl = algorithm.taps[l, p]
+                tl == 0 && continue
+                J[ny + tj, ny + tl] += sum(
+                    Wb[c, d] * (A[c, j] * A[d, l] + Va[(j - 1) * n + c, (l - 1) * n + d]) for c in 1:n, d in 1:n
+                )
+            end
+        end
+    end
+
+    function check_dense(actual, factor, h, messages)
+        ξ = BigFloat[first(weightedmean_precision(v)) for v in messages]
+        λ = BigFloat[last(weightedmean_precision(v)) for v in messages]
+        Q = factor + Diagonal(λ)
+        V = inv(Symmetric(Q))
+        @test mean(actual) ≈ Float64.(V * (h + ξ)) rtol = 1.0e-10 atol = 1.0e-11
+        @test var(actual) ≈ Float64.(diag(V)) rtol = 1.0e-10
+        # Eliminate all other coordinates; never subtract the target's incoming parameters.
+        for k in eachindex(ξ)
+            others = setdiff(eachindex(ξ), (k,))
+            cross = factor[k, others]
+            F = cholesky(Symmetric(Q[others, others]))
+            expected_λ = factor[k, k] - dot(cross, F \ cross)
+            expected_ξ = h[k] - dot(cross, F \ (h[others] + ξ[others]))
+            @test actual.λ[k] ≈ Float64(expected_λ) rtol = 1.0e-10 atol = 1.0e-11
+            @test actual.ξ[k] ≈ Float64(expected_ξ) rtol = 1.0e-10 atol = 1.0e-11
+        end
+    end
+
+    for scale in (1.0, 1.0e6, 1.0e12), strong in (:x, :y, :both)
+        @testset "precision $scale on $strong" begin
+            λy, λx = strong === :x ? 1.3 : scale, strong === :y ? 0.7 : scale
+            y = ntuple(i -> NormalWeightedMeanPrecision(λy * my[i], λy), ny)
+            x = ntuple(i -> NormalWeightedMeanPrecision(λx * mx[i], λx), nx)
+            joint = getresult(call_marginal_update_rule(Conv2dCT, (:y, :x); algorithm, m = (y = y, x = x), q))
+            check_dense(joint, J, zeros(BigFloat, ny + nx), (y..., x...))
+            for (group, offset, messages) in ((:y, 0, y), (:x, ny, x)), k in (1, length(messages))
+                incoming = group === :y ? (y = without(y, k), x = x) : (y = y, x = without(x, k))
+                message = getresult(call_message_update_rule(Conv2dCT, (group, k); algorithm, m = incoming, q))
+                @test collect(weightedmean_precision(message)) ≈ [joint.ξ[offset + k], joint.λ[offset + k]] rtol = 1.0e-10 atol = 1.0e-11
+            end
+            for (group, indices, others, means, messages) in (
+                    (:x, (ny + 1):(ny + nx), 1:ny, my, x),
+                    (:y, 1:ny, (ny + 1):(ny + nx), mx, y),
+                )
+                othergroup = group === :x ? :y : :x
+                state = MvNormalMeanCovariance(means, Matrix(1.0I, length(means), length(means)))
+                separate = getresult(call_marginal_update_rule(Conv2dCT, (group,); algorithm, m = NamedTuple{(group,)}((messages,)), q, clusters = ((othergroup,) => state,)))
+                check_dense(separate, J[indices, indices], -J[indices, others] * BigFloat.(means), messages)
+            end
+        end
+    end
+end
+
+@testitem "rules:Conv2dVMP:uncovered pixels and partial observations" tags = [:rules] setup = [Conv2dReference] begin
+    algorithm = Conv2dVMP((4, 4, 1), 1, (1, 1); stride = 2)
+    ny, nx = algorithm.ny, algorithm.nx
+    q = (a = MvNormalMeanCovariance([1.3], [0.2;;]), W = PointMass([2.0;;]))
+    y = ntuple(i -> NormalMeanVariance(i / 3, 0.7), ny)
+    x = ntuple(i -> NormalMeanVariance(i / 7, 1.3), nx)
+    joint = getresult(call_marginal_update_rule(Conv2dCT, (:y, :x); algorithm, m = (y = y, x = x), q))
+    qy = MvNormalMeanCovariance(collect(mean.(y)), Matrix(1.0I, ny, ny))
+    separate = getresult(call_marginal_update_rule(Conv2dCT, (:x,); algorithm, m = (x = x,), q, clusters = ((:y,) => qy,)))
+    for k in setdiff(1:nx, vec(algorithm.taps))
+        for (state, offset) in ((joint, ny), (separate, 0))
+            @test state.ξ[offset + k] == 0.0
+            @test state.λ[offset + k] == 0.0
+            @test mean(state)[offset + k] ≈ mean(x[k])
+            @test var(state)[offset + k] ≈ var(x[k])
+        end
+        message = getresult(call_message_update_rule(Conv2dCT, (:x, k); algorithm, m = (y = y, x = without(x, k)), q))
+        @test weightedmean_precision(message) == (0.0, 0.0)
+    end
+    mixed = (PointMass(0.2), x[2:end]...)
+    @test_throws ArgumentError getresult(call_marginal_update_rule(Conv2dCT, (:y, :x); algorithm, m = (y = y, x = mixed), q))
+    # Independent scalar marginals may still mix observed and uncertain values.
+    observed = getresult(call_marginal_update_rule(Conv2dCT, (:y,); algorithm, m = (y = y,), q = merge(q, (x = mixed,))))
+    densex = MvNormalMeanCovariance(collect(mean.(mixed)), Matrix(Diagonal([0.0; collect(var.(x[2:end]))])))
+    dense = getresult(call_marginal_update_rule(Conv2dCT, (:y,); algorithm, m = (y = y,), q, clusters = ((:x,) => densex,)))
+    @test mean(observed) ≈ mean(dense)
+    @test var(observed) ≈ var(dense)
+    # Explicitly supplied observed pixels override the moments stored in an older q(y).
+    changed = ntuple(i -> PointMass(i / 3), nx)
+    densey = MvNormalMeanCovariance(mean(observed), Matrix(Diagonal(var(observed))))
+    clusters = ((:y,) => observed,)
+    towards_a = getresult(call_message_update_rule(Conv2dCT, :a; algorithm, clusters, q = (W = q.W, x = changed)))
+    towards_W = getresult(call_message_update_rule(Conv2dCT, :W; algorithm, clusters, q = (a = q.a, x = changed)))
+    energy = getresult(call_average_energy(Conv2dCT; algorithm, clusters, q = merge(q, (x = changed,))))
+    expected_clusters = ((:y,) => densey,)
+    expected_a = getresult(call_message_update_rule(Conv2dCT, :a; algorithm, clusters = expected_clusters, q = (W = q.W, x = changed)))
+    expected_W = getresult(call_message_update_rule(Conv2dCT, :W; algorithm, clusters = expected_clusters, q = (a = q.a, x = changed)))
+    expected_energy = getresult(call_average_energy(Conv2dCT; algorithm, clusters = expected_clusters, q = merge(q, (x = changed,))))
+    @test all(isapprox.(params(towards_a), params(expected_a)))
+    @test towards_W.invS ≈ expected_W.invS
+    @test energy ≈ expected_energy
+end
+
+@testitem "rules:Conv2dVMP:cache recovery after errors" tags = [:rules] setup = [Conv2dReference] begin
+    q = (a = MvNormalMeanCovariance(ones(4), Matrix(0.1I, 4, 4)), W = PointMass([1.0;;]))
+    y = (NormalMeanVariance(0.2, 1.0),)
+    x = ntuple(i -> NormalMeanVariance(i / 10, 1.0), 4)
+    qy = MvNormalMeanCovariance([0.2], [1.0;;])
+    for separate in (false, true)
+        algorithm = Conv2dVMP((2, 2, 1), 1, (2, 2))
+        inputs = separate ? (clusters = ((:y,) => qy,),) : (;)
+        message(x) = getresult(call_message_update_rule(Conv2dCT, (:x, 1); algorithm, m = separate ? (x = x,) : (y = y, x = x), q, inputs...))
+        good = without(x, 1)
+        expected = weightedmean_precision(message(good))
+        bad = (nothing, NormalWeightedMeanPrecision(0.0, -50.0), x[3], x[4])
+        for _ in 1:2
+            @test_throws PosDefException message(bad)
+        end
+        @test collect(weightedmean_precision(message(good))) ≈ collect(expected)
+        # Validation can fail after some snapshots have already been changed.
+        malformed = (nothing, NormalMeanVariance(2.0, 1.0), PointMass(0.0), x[4])
+        for _ in 1:2
+            @test_throws ArgumentError message(malformed)
+        end
+        @test collect(weightedmean_precision(message(good))) ≈ collect(expected)
+    end
+    # The y-only cached system must also stay invalid after a failed factorisation.
+    algorithm = Conv2dVMP((1, 1, 1), 2, (1, 1))
+    q2 = (a = MvNormalMeanCovariance(ones(2), Matrix(0.1I, 2, 2)), W = PointMass([1.0 0.2; 0.2 1.0]), x = (PointMass(0.4),))
+    message(y) = getresult(call_message_update_rule(Conv2dCT, (:y, 1); algorithm, m = (y = y,), q = q2))
+    good = (nothing, NormalMeanVariance(0.3, 1.0))
+    expected = weightedmean_precision(message(good))
+    for _ in 1:2
+        @test_throws PosDefException message((nothing, NormalWeightedMeanPrecision(0.0, -50.0)))
+    end
+    @test collect(weightedmean_precision(message(good))) ≈ collect(expected)
+end
+
+@testitem "rules:Conv2dVMP:parameter representations and mutation" tags = [:rules] setup = [Conv2dReference] begin
+    rng = StableRNG(516)
+    algorithm = Conv2dVMP((2, 3, 1), 2, (2, 2))
+    n, m, ny, nx = algorithm.n, algorithm.m, algorithm.ny, algorithm.nx
+    d = n * m
+    μ, V = randn(rng, d), spd(rng, Float64, d)
+    Λ = inv(Symmetric(V))
+    W = PointMass(spd(rng, Float64, n))
+    y = ntuple(_ -> NormalMeanVariance(randn(rng), 0.7), ny)
+    x = ntuple(_ -> NormalMeanVariance(randn(rng), 0.9), nx)
+    function check(qa)
+        q = (a = qa, W = W)
+        actual = getresult(call_marginal_update_rule(Conv2dCT, (:y, :x); algorithm, m = (y = y, x = x), q))
+        fresh = Conv2dVMP(algorithm.insize, n, algorithm.kernel)
+        canonical = (a = MvNormalMeanCovariance(mean(qa), Matrix(cov(qa))), W = W)
+        expected = getresult(call_marginal_update_rule(Conv2dCT, (:y, :x); algorithm = fresh, m = (y = y, x = x), q = canonical))
+        for field in (:mean, :var, :ξ, :λ, :Exx, :Eyx, :Eyy, :entropy)
+            @test getfield(actual, field) ≈ getfield(expected, field) rtol = 1.0e-10 atol = 1.0e-11
+        end
+        clusters = ((:y, :x) => actual,)
+        aW = getresult(call_message_update_rule(Conv2dCT, :W; algorithm, clusters, q = (a = qa,)))
+        eW = getresult(call_message_update_rule(Conv2dCT, :W; algorithm = fresh, clusters, q = (a = canonical.a,)))
+        @test aW.invS ≈ eW.invS
+        @test getresult(call_average_energy(Conv2dCT; algorithm, clusters, q)) ≈ getresult(call_average_energy(Conv2dCT; algorithm = fresh, clusters, q = canonical))
+        # Repeating unchanged inputs must not rebuild the parameter snapshot.
+        version = algorithm.cache.a.version
+        getresult(call_marginal_update_rule(Conv2dCT, (:y, :x); algorithm, m = (y = y, x = x), q))
+        @test algorithm.cache.a.version == version
+    end
+    for qa in (
+            MvNormalMeanCovariance(copy(μ), copy(V)),
+            MvNormalMeanPrecision(copy(μ), copy(Λ)),
+            MvNormalWeightedMeanPrecision(Λ * μ, copy(Λ)),
+            MvNormalMeanScalePrecision(copy(μ), 2.0),
+        )
+        check(qa)
+        first(params(qa))[1] += 0.3
+        check(qa)
+        if last(params(qa)) isa AbstractMatrix
+            last(params(qa))[2, 2] += 0.4
+            check(qa)
+        end
+    end
+    check(MvNormalMeanScalePrecision(copy(μ), 3.0))
 end

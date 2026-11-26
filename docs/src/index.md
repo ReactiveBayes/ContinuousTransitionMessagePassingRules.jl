@@ -173,12 +173,16 @@ the structured message towards `W` cannot determine the split of `q(y, x)` from 
 
 This node supports the same eight messages, joint marginal, and two average energies. Its
 message towards `a` uses weighted mean `vec(E[W] * E[y*x′])` and precision
-`kron(E[x*x′], E[W])`, so it does not read `q(a)` or need an initial expansion point.
+`kron(E[x*x′], E[W])`, so it does not read `q(a)` or need an initial expansion point. Other
+messages still require `q(a)`.
 
 The rules reshape the parameter mean and contract blocks of its covariance directly.
-They construct no Jacobians, including constant identity or selection matrices. Message and marginal rules declare
+They construct no Jacobians, including constant identity or selection matrices. Gaussian
+solves and covariance contractions still take work. Message and marginal rules declare
 scratch matrices that the engine reuses per outbound stream; each call overwrites its scratch
-and returns separately owned parameters. Sharing `LCTVMP` across nodes therefore is allowed.
+and returns separately owned parameters. Sharing `LCTVMP` across nodes therefore does not
+share mutable working memory. Direct calls allocate fresh scratch, and average energies do
+not retain it between calls.
 
 ```@example ct
 MessagePassingRulesBase.rule_coverage(LinearContinuousTransition)
@@ -230,7 +234,10 @@ dense `ny × nx` and `(ny + nx)²` matrices, where this node never forms either.
 
 A group's marginal is a [`Conv2dMarginal`](@ref), not a dense Gaussian. It holds the mean and
 variance of every member, the message towards every member, the second moments of the
-patches summed over positions, and the entropy:
+patches summed over positions, and the entropy. Incoming messages for a latent group must
+all be univariate Gaussians. Joint inference with a mixture of `PointMass` and Gaussian
+incoming messages (a partially observed image) is not supported. Independent scalar
+marginals supplied as `q(x)` may contain both, and fully observed images are supported:
 
 ```@example ct
 messages_y = ntuple(_ -> NormalMeanVariance(0.0, 0.1), conv.ny)
@@ -265,8 +272,10 @@ Takahashi recursion) give every mean, every variance and every covariance inside
 which is all the node needs, in `O(nx b²)` time and `O(nx b)` memory. A 28 × 28 image with
 a 3 × 3 kernel is 1,460 ports with bandwidth 58: its joint takes 2.4 ms and 0.2 MB, where a
 dense solve would factorise a 1,460 × 1,460 matrix. The precision of a port's message is
-formed as a Schur complement over the port's own row, never as `1 / variance` minus its
-incoming precision.
+formed as a Schur complement over the port's own row. The factor's precision and weighted
+mean contributions are kept separately from incoming messages, avoiding subtraction of
+large incoming natural parameters when forming outgoing messages. A pixel that no patch
+covers receives exactly zero weighted mean and precision.
 
 Given `q(x)`, as for an observed image, the positions are independent and only a
 `C_out × C_out` system per position is solved.
@@ -283,11 +292,10 @@ that call receives:
 | `:observed` | `q(y)q(a)q(W)`, `x` given as data | `q(y)`; no message goes to `x` |
 | `:default` | any of these | the other messages of its group, as the engine's default scheme delivers them |
 
-With `:joint`, `:separate` and `:observed` the node solves once per iteration, when the
-group's marginal is computed, and every port reads its message from the result, in constant
-time. `:observed` also keeps the moments of the observed patches in `q(y)`, so the rules
-towards `a` and `W` never read the pixels again. `:default` works under every factorisation
-and for direct calls: each port's rule receives the other messages of its group, and one
+With `:joint`, `:separate` and `:observed` each group marginal update performs one solve,
+and every port reads its message from that result in constant time. `:observed` also keeps
+the moments of the observed patches in `q(y)`, so the rules towards `a` and `W` never read
+the pixels again. The `:default` rules support both factorizations and direct calls: each port's rule receives the other messages of its group, and one
 solve is reused across ports while the inputs stay the same. Prefer the other three for
 large images. **Create one `Conv2dVMP` per node.**
 
@@ -344,10 +352,12 @@ The reference of a port's message is `CTVMP`'s whole message towards `y`, which 
 computes once for all of `y`; the node's row is the read of one port, after the joint. The
 reference of `q(y)` is `CTVMP`'s mean-field message towards `y` times the incoming messages.
 
-The cost of every rule but the group marginal does not depend on the image: the messages
-towards `a` and `W` and the energy read moments that the marginal already holds. The marginal
-itself grows linearly with the number of positions for an observed image, and as `nx b²` for
-a latent one.
+With `:joint` and `:observed`, port reads, parameter messages and energy updates use the
+moments already held by the group marginal, so their cost does not depend on image size.
+Separate groups and direct calls that supply explicit scalar marginals also traverse the
+patches to assemble the needed moments. Explicit `q(x)` inputs take precedence over moments
+retained by an earlier `q(y)`. The group marginal itself grows linearly with the number of
+positions for an observed image, and as `nx b²` for a latent one.
 
 `integration/conv2d_vs_ctvmp.jl` runs both as RxInfer models on the same data and checks that
 their free energies and posteriors agree.
