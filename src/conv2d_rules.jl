@@ -219,11 +219,11 @@ function conv_x_messages!(ξout, λout, μ, v, algo::Conv2dVMP{T}, band, offset)
         @simd for d in 1:min(b, N - t)
             total += J[d + 1, t] * Z[d + 1, t]
             weighted -= J[d + 1, t] * band.rhs[t + d]
-        end
+        end # COV_EXCL_LINE: non-executable @simd boundary.
         @simd for d in 1:min(b, t - 1)
             total += J[d + 1, t - d] * Z[d + 1, t - d]
             weighted -= J[d + 1, t - d] * band.rhs[t - d]
-        end
+        end # COV_EXCL_LINE: non-executable @simd boundary.
         μ[offset + i], v[offset + i] = band.rhs[t], vt
         correction = total / vt
         λout[offset + i] = J[1, t] + correction

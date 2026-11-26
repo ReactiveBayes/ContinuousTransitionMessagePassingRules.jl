@@ -648,3 +648,72 @@ end
     end
     check(MvNormalMeanScalePrecision(copy(μ), 3.0))
 end
+
+@testitem "rules:Conv2dVMP:independent scalar state groups" tags = [:rules] setup = [Conv2dReference] begin
+    algorithm = Conv2dVMP((2, 2, 1), 2, (1, 2))
+    n, m, ny, nx = algorithm.n, algorithm.m, algorithm.ny, algorithm.nx
+    ct = reference(algorithm)
+    qa = MvNormalMeanCovariance([0.8, -0.2, 0.3, 0.6], Matrix(0.2I, n * m, n * m))
+    W = [2.0 0.3; 0.3 1.5]
+    q, qref = (a = qa, W = PointMass(W)), (a = qa, W = PointMass(ct.bigW(W)))
+    incoming = ntuple(i -> NormalWeightedMeanPrecision(i / 3, 1.0 + i / 4), 4)
+    scalar_states = (
+        ntuple(i -> NormalMeanVariance(i / 5, 0.7), 4),
+        (PointMass(-0.4), NormalMeanVariance(0.2, 0.7), NormalMeanPrecision(0.4, 2.0), NormalWeightedMeanPrecision(0.3, 1.7)),
+    )
+    dense(scalars) = MvNormalMeanCovariance(collect(mean.(scalars)), Matrix(Diagonal([s isa PointMass ? 0.0 : var(s) for s in scalars])))
+    for group in (:x, :y), scalars in scalar_states
+        other = group === :x ? :y : :x
+        states = NamedTuple{(other,)}((scalars,))
+        dense_states = NamedTuple{(other,)}((dense(scalars),))
+        message = getresult(call_message_update_rule(ContinuousTransition, group; algorithm = ct.algorithm, q = merge(qref, dense_states)))
+        μ, V = mean_cov(prod(GenericProd(), convert(MvNormalWeightedMeanPrecision, message), diagonal(incoming)))
+        actual = getresult(call_marginal_update_rule(Conv2dCT, (group,); algorithm, m = NamedTuple{(group,)}((incoming,)), q = merge(q, states)))
+        expected = check_marginal(actual, μ, V, incoming; atol = 1.0e-10, rtol = 1.0e-10)
+        function sweep()
+            for k in eachindex(incoming)
+                port = getresult(call_message_update_rule(Conv2dCT, (group, k); algorithm, m = NamedTuple{(group,)}((without(incoming, k),)), q = merge(q, states)))
+                @test collect(weightedmean_precision(port)) ≈ collect(expected[k]) atol = 1.0e-10 rtol = 1.0e-10
+            end
+        end
+        sweep()
+        cached = getproperty(algorithm.cache, group)
+        solves = cached.solves
+        sweep()
+        @test cached.solves == solves
+        # The target's own scalar marginals are not an opposite-group dependency.
+        @test_throws ArgumentError getresult(
+            call_message_update_rule(
+                Conv2dCT, (group, 1); algorithm, m = NamedTuple{(group,)}((without(incoming, 1),)), q = merge(q, NamedTuple{(group,)}((scalars,))),
+            )
+        )
+    end
+
+    # A variance-only change leaves outgoing y messages unchanged, but must refresh the
+    # patch moments used by parameter messages. Exercise the mixed-type cached path.
+    scalars = last(scalar_states)
+    before = algorithm.cache.y.result
+    saved = deepcopy(before)
+    solves = algorithm.cache.y.solves
+    changed = (scalars[1], NormalMeanVariance(mean(scalars[2]), 1.4), scalars[3:end]...)
+    for k in 1:ny
+        getresult(call_message_update_rule(Conv2dCT, (:y, k); algorithm, m = (y = without(incoming, k),), q = merge(q, (x = changed,))))
+    end
+    after = algorithm.cache.y.result
+    @test algorithm.cache.y.solves == solves + 1
+    @test after.ξ ≈ before.ξ && after.λ ≈ before.λ
+    @test after.Exx != before.Exx
+    @test all(getfield(before, field) == getfield(saved, field) for field in fieldnames(Conv2dMarginal))
+    actual_a = getresult(call_message_update_rule(Conv2dCT, :a; algorithm, clusters = ((:y,) => after,), q = (W = q.W,)))
+    # Compare with CTVMP using the independent x marginals and the full y covariance.
+    reference_y_message = getresult(call_message_update_rule(ContinuousTransition, :y; algorithm = ct.algorithm, q = merge(qref, (x = dense(changed),))))
+    reference_y = prod(GenericProd(), convert(MvNormalWeightedMeanPrecision, reference_y_message), diagonal(incoming))
+    expected_a = convert(
+        MvNormalWeightedMeanPrecision, getresult(
+            call_message_update_rule(
+                ContinuousTransition, :a; algorithm = ct.algorithm, q = merge(qref, (y = reference_y, x = dense(changed))),
+            )
+        )
+    )
+    @test all(isapprox.(params(actual_a), params(expected_a)))
+end

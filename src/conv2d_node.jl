@@ -76,7 +76,7 @@ function conv_equal(a::AbstractArray{T}, b) where {T}
     # Scan snapshots without allocating, with a vectorisable reduction for dense arrays.
     @inbounds @simd for i in eachindex(a, b)
         same &= isequal(a[i], T(b[i]))
-    end
+    end # COV_EXCL_LINE: non-executable @simd boundary.
     return same
 end
 

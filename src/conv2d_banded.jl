@@ -28,7 +28,7 @@ function banded_cholesky!(band::AbstractMatrix{T}) where {T}
             iszero(l) && continue
             @simd for e in d:last
                 band[e - d + 1, j + d] -= band[e + 1, j] * l
-            end
+            end # COV_EXCL_LINE: non-executable @simd boundary.
         end
     end
     return band
@@ -44,13 +44,13 @@ function banded_solve!(x::AbstractVector, factor::AbstractMatrix)
         x[j] = v
         @simd for d in 1:min(b, N - j)
             x[j + d] -= factor[d + 1, j] * v
-        end
+        end # COV_EXCL_LINE: non-executable @simd boundary.
     end
     @inbounds for j in N:-1:1
         v = x[j]
         @simd for d in 1:min(b, N - j)
             v -= factor[d + 1, j] * x[j + d]
-        end
+        end # COV_EXCL_LINE: non-executable @simd boundary.
         x[j] = v / factor[1, j]
     end
     return x
