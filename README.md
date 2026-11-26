@@ -50,8 +50,7 @@ It agrees with `ContinuousTransition` under `CTVMP` given the matrix that repeat
 and independent state messages, solves latent images in a banded system instead of a dense
 one, accepts observed pixels, and is described in the
 [convolution documentation](docs/src/index.md#a-convolution-as-one-node).
-`integration/conv2d_vs_ctvmp.jl` compares it with `CTVMP` end to end in RxInfer and
-`benchmark/conv2d.jl` rule by rule.
+`benchmark/conv2d.jl` compares it with `CTVMP` rule by rule.
 
 ```julia
 import Pkg; Pkg.add("ContinuousTransitionMessagePassingRules")
@@ -72,5 +71,4 @@ from the repository root:
 julia --project=benchmark -e 'import Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=benchmark benchmark/linear.jl
 julia --project=benchmark benchmark/conv2d.jl
-julia --project=benchmark benchmark/conv2d_cache.jl
 ```

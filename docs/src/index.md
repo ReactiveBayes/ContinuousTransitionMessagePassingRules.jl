@@ -319,13 +319,8 @@ end
 ```
 
 with `constraints = @constraints begin q(y, a, W) = q(y)q(a)q(W) end`, and `x` and `z` the
-concatenated `vec`s of the images and of their noisy convolutions. This is
-`integration/conv2d_mnist.jl`, which learns a kernel from a batch of MNIST images and has its
-own environment, because RxInfer is not a dependency of this package:
-
-```
-julia --project=integration integration/conv2d_mnist.jl 14 4 1
-```
+concatenated `vec`s of the images and of their noisy convolutions. The model needs RxInfer,
+which is not a dependency of this package.
 
 For a latent image, give every pixel its own prior, keep `y` and `x` together with
 `q(y, x, a, W) = q(y, x)q(a)q(W)`, and use `ports = :joint`.
@@ -346,7 +341,7 @@ warmed time in microseconds; `CTVMP` was not run at 28 × 28):
 | `q(y)`, observed pixels | 3.0 | 1.3 | 23.0 | 4.6 | 476 | 24.2 | 109 |
 | `a`, observed pixels | 12.0 | 0.20 | 330 | 0.20 | 42,766 | 0.20 | 0.20 |
 | `W`, observed pixels | 17.0 | 0.50 | 1,723 | 0.50 | 691,995 | 0.50 | 0.50 |
-| energy, observed pixels | 17.0 | 0.70 | 1,721 | 0.70 | 674,987 | 0.80 | 1.1 |
+| energy, observed pixels | 17.0 | 0.70 | 1,721 | 0.70 | 674,987 | 0.70 | 0.70 |
 
 The reference of a port's message is `CTVMP`'s whole message towards `y`, which an engine
 computes once for all of `y`; the node's row is the read of one port, after the joint. The
@@ -358,9 +353,6 @@ Separate groups and direct calls that supply explicit scalar marginals also trav
 patches to assemble the needed moments. Explicit `q(x)` inputs take precedence over moments
 retained by an earlier `q(y)`. The group marginal itself grows linearly with the number of
 positions for an observed image, and as `nx b²` for a latent one.
-
-`integration/conv2d_vs_ctvmp.jl` runs both as RxInfer models on the same data and checks that
-their free energies and posteriors agree.
 
 ## API
 

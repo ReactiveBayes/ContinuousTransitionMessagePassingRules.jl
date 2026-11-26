@@ -22,9 +22,8 @@ All notable changes to ContinuousTransitionMessagePassingRules.jl are documented
     group's marginal, with one solve per group marginal update; `:default` follows the
     engine's default scheme.
   - Tested against `ContinuousTransition` under `CTVMP` with the convolution matrix and
-    independent (diagonal) state messages, for every rule. `integration/conv2d_vs_ctvmp.jl`
-    compares the two end to end in RxInfer, `benchmark/conv2d.jl` rule by rule, and
-    `integration/conv2d_mnist.jl` learns a kernel from MNIST images.
+    independent (diagonal) state messages, for every rule. `benchmark/conv2d.jl` times the
+    two rule by rule.
 
 ### Optimization
 
@@ -57,5 +56,6 @@ The first release: the ContinuousTransition node, a transition through a matrix 
 [ReactiveMP](https://github.com/ReactiveBayes/ReactiveMP.jl) repository, whose history this
 repository keeps.
 
-[Unreleased]: https://github.com/ReactiveBayes/ContinuousTransitionMessagePassingRules.jl/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/ReactiveBayes/ContinuousTransitionMessagePassingRules.jl/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/ReactiveBayes/ContinuousTransitionMessagePassingRules.jl/releases/tag/v1.1.0
 [1.0.0]: https://github.com/ReactiveBayes/ContinuousTransitionMessagePassingRules.jl/releases/tag/v1.0.0

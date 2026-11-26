@@ -63,7 +63,7 @@ function conv_benchmark(; sides = (4, 7, 14, 28), reference_limit = 14)
             ("q(y), pixels", (:marginal, (:y,), (m = (y = my,), q = merge(q, (x = pixels,)))), () -> (:message, :y, (q = merge(qref, (x = dense,)),), m -> prod(GenericProd(), convert(MvNormalWeightedMeanPrecision, m), dy))),
             ("a, pixels", (:message, :a, (clusters = ((:y,) => qy,), q = (W = q.W,))), () -> (:message, :a, (q = merge(qref, (y = densey, x = dense)),))),
             ("W, pixels", (:message, :W, (clusters = ((:y,) => qy,), q = (a = qa,))), () -> (:message, :W, (q = (a = qa, y = densey, x = dense),))),
-            ("energy, pixels", (:energy, nothing, (clusters = ((:y,) => qy,), q = merge(q, (x = pixels,)))), () -> (:energy, nothing, (q = merge(qref, (y = densey, x = dense)),))),
+            ("energy, pixels", (:energy, nothing, (clusters = ((:y,) => qy,), q = q)), () -> (:energy, nothing, (q = merge(qref, (y = densey, x = dense)),))),
         )
         for (label, (kind, edge, inputs), reference) in rows
             new = quick(prepared(Conv2dCT, algorithm, kind, edge, inputs))
